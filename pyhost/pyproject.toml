@@ -1,0 +1,15 @@
+[project]
+name = "pyhost"
+version = "0.1.0"
+description = "usb_responder 上位机（pyusb），协议见仓库根目录 PROTOCOL.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pyusb>=1.2.1",
+]
+
+[project.scripts]
+epass-host = "pyhost.client:main"
+
+[build-system]
+requires = ["uv_build>=0.10.4,<0.11.0"]
+build-backend = "uv_build"
