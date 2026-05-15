@@ -19,6 +19,7 @@
 
 #define USB_RESPONDER_MAX_PAYLOAD (8u * 1024u * 1024u)
 #define USB_RESPONDER_IO_CHUNK (16u * 1024u)
+#define USB_RESPONDER_RX_WAIT_LOG_MS 5000
 
 typedef struct responder_runtime {
     usb_responder_config_t cfg;
@@ -34,6 +35,51 @@ typedef struct responder_runtime {
 
 static uint32_t read_le32(const uint8_t* p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static uint16_t read_le16(const uint8_t* p) {
+    return (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+}
+
+static const char* msg_type_name(uint16_t type) {
+    switch ((usb_responder_msg_type_t)type) {
+    case USB_RESPONDER_MSG_HELLO:
+        return "HELLO";
+    case USB_RESPONDER_MSG_STATUS:
+        return "STATUS";
+    case USB_RESPONDER_MSG_ERROR:
+        return "ERROR";
+    case USB_RESPONDER_MSG_FILE_PUT_BEGIN:
+        return "FILE_PUT_BEGIN";
+    case USB_RESPONDER_MSG_FILE_PUT_CHUNK:
+        return "FILE_PUT_CHUNK";
+    case USB_RESPONDER_MSG_FILE_PUT_END:
+        return "FILE_PUT_END";
+    case USB_RESPONDER_MSG_FILE_GET:
+        return "FILE_GET";
+    case USB_RESPONDER_MSG_FILE_LIST:
+        return "FILE_LIST";
+    case USB_RESPONDER_MSG_FILE_DELETE:
+        return "FILE_DELETE";
+    case USB_RESPONDER_MSG_FILE_RENAME:
+        return "FILE_RENAME";
+    case USB_RESPONDER_MSG_COMMAND_EXEC:
+        return "COMMAND_EXEC";
+    case USB_RESPONDER_MSG_COMMAND_RESULT:
+        return "COMMAND_RESULT";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static void log_frame_header(const char* prefix, const usb_responder_frame_header_t* h) {
+    fprintf(stderr, "%s type=%s(%u) req=%u payload=%u flags=0x%08x\n",
+            prefix,
+            msg_type_name(h->type),
+            h->type,
+            h->request_id,
+            h->payload_len,
+            h->flags);
 }
 
 static bool open_ep(int* out_fd, const char* mount, const char* name, int flags) {
@@ -99,6 +145,36 @@ static bool rx_read_some(responder_runtime_t* rt) {
         return false;
     }
     for (;;) {
+        struct pollfd pfd;
+        int pr = 0;
+
+        pfd.fd = rt->ep_out_fd;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        pr = poll(&pfd, 1, USB_RESPONDER_RX_WAIT_LOG_MS);
+        if (pr == 0) {
+            fprintf(stderr, "rx waiting for data buffered=%zu\n", rt->rx_size);
+            continue;
+        }
+        if (pr < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            {
+                char msg[256];
+                snprintf(msg, sizeof(msg), "ep_out poll: %s", strerror(errno));
+                usb_responder_set_last_error(msg);
+            }
+            free(tmp);
+            return false;
+        }
+        if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) {
+            usb_responder_set_last_error("ep_out poll shutdown");
+            rt->ep_shutdown = true;
+            free(tmp);
+            return false;
+        }
+
         r = read(rt->ep_out_fd, tmp, read_size);
         if (r < 0 && errno == EINTR) {
             continue;
@@ -140,6 +216,17 @@ static bool read_frame_buffered(responder_runtime_t* rt, usb_responder_frame_t* 
             return false;
         }
     }
+    if (read_le32(rt->rx_buf) != USB_RESPONDER_MAGIC || read_le16(rt->rx_buf + 4) != USB_RESPONDER_VERSION) {
+        char msg[256];
+        snprintf(msg,
+                 sizeof(msg),
+                 "bad frame header magic=0x%08x version=%u buffered=%zu",
+                 read_le32(rt->rx_buf),
+                 read_le16(rt->rx_buf + 4),
+                 rt->rx_size);
+        usb_responder_set_last_error(msg);
+        return false;
+    }
     payload_len = read_le32(rt->rx_buf + 16);
     if (payload_len > USB_RESPONDER_MAX_PAYLOAD) {
         usb_responder_set_last_error("payload too large");
@@ -167,6 +254,8 @@ static bool read_frame_buffered(responder_runtime_t* rt, usb_responder_frame_t* 
     free(raw);
     if (!ok) {
         usb_responder_set_last_error("decode frame failed");
+    } else {
+        log_frame_header("rx frame", &out_frame->header);
     }
     return ok;
 }
@@ -186,7 +275,13 @@ static bool send_kv_response(
     frame.header.request_id = req_id;
     frame.header.payload_len = (uint32_t)payload_size;
     frame.payload = payload;
+    log_frame_header("tx frame begin", &frame.header);
     ok = usb_responder_protocol_write_frame(rt->ep_in_fd, &frame);
+    if (ok) {
+        log_frame_header("tx frame done", &frame.header);
+    } else {
+        fprintf(stderr, "tx frame failed: %s\n", usb_responder_last_error());
+    }
     free(payload);
     return ok;
 }
@@ -307,10 +402,13 @@ static bool handle_file_get(responder_runtime_t* rt, const usb_responder_frame_t
     out.header.type = USB_RESPONDER_MSG_FILE_GET;
     out.header.request_id = in->header.request_id;
     out.header.payload_len = (uint32_t)payload_size;
+    log_frame_header("tx frame begin", &out.header);
     if (!usb_responder_protocol_write_frame(rt->ep_in_fd, &out)) {
+        fprintf(stderr, "tx frame failed: %s\n", usb_responder_last_error());
         free(out.payload);
         return false;
     }
+    log_frame_header("tx frame done", &out.header);
     free(out.payload);
     return true;
 }
@@ -433,7 +531,13 @@ static bool handle_command_exec(responder_runtime_t* rt, const usb_responder_fra
     out.header.type = USB_RESPONDER_MSG_COMMAND_RESULT;
     out.header.request_id = in->header.request_id;
     out.header.payload_len = (uint32_t)payload_size;
+    log_frame_header("tx frame begin", &out.header);
     ok = usb_responder_protocol_write_frame(rt->ep_in_fd, &out);
+    if (ok) {
+        log_frame_header("tx frame done", &out.header);
+    } else {
+        fprintf(stderr, "tx frame failed: %s\n", usb_responder_last_error());
+    }
 
     free(out.payload);
     usb_responder_shell_exec_result_free(&shell);
@@ -566,8 +670,9 @@ static bool handle_io_loop(responder_runtime_t* rt) {
                 enabled = false;
                 continue;
             }
+            log_frame_header("handle frame begin", &frame.header);
             if (!handle_frame(rt, &frame)) {
-                fprintf(stderr, "handle frame failed\n");
+                fprintf(stderr, "handle frame failed: %s\n", usb_responder_last_error());
             }
             usb_responder_protocol_frame_free(&frame);
         } else if (enabled && n > 1 && (pfds[1].revents & (POLLHUP | POLLERR | POLLNVAL))) {

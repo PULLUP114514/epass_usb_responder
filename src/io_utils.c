@@ -53,6 +53,10 @@ bool usb_responder_write_full(int fd, const uint8_t* data, size_t size) {
             set_errno_error("write");
             return false;
         }
+        if (w == 0) {
+            usb_responder_set_last_error("write returned 0");
+            return false;
+        }
         done += (size_t)w;
     }
     return true;
