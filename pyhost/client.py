@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple
 import usb.core
 import usb.util
 
-from . import protocol as P
+import protocol as P
 
 MAX_PAYLOAD = 8 * 1024 * 1024
 USB_REQUEST_CHUNK = 16 * 1024
@@ -208,8 +208,8 @@ def _parse_hex(s: str) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="usb_responder 上位机（pyusb），协议见 PROTOCOL.md")
-    p.add_argument("--vid", type=_parse_hex, required=True, help="USB Vendor ID（十六进制，如 0x1234）")
-    p.add_argument("--pid", type=_parse_hex, required=True, help="USB Product ID")
+    p.add_argument("--vid", type=_parse_hex, default=0x1d6b, help="USB Vendor ID（十六进制，如 0x1234）")
+    p.add_argument("--pid", type=_parse_hex, default=0x0203, help="USB Product ID")
     p.add_argument("--serial", default=None, help="按序列号筛选（可选）")
     p.add_argument("--interface", type=int, default=0, help="接口号，默认 0")
     p.add_argument("--timeout", type=int, default=60_000, help="USB 传输超时（毫秒）")
