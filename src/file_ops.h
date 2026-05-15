@@ -37,7 +37,18 @@ bool usb_responder_file_abort_upload(usb_responder_file_ops_t* ops, uint32_t tra
 bool usb_responder_file_read(
     const usb_responder_file_ops_t* ops, const char* relative_path, uint8_t** out_data, size_t* out_size);
 bool usb_responder_file_list(
-    const usb_responder_file_ops_t* ops, const char* relative_path, char** out_text);
+    const usb_responder_file_ops_t* ops, const char* relative_path, char** out_files, char** out_dirs);
+
+typedef struct usb_responder_stat_info {
+    char owner[256];
+    char perm[16];
+    char size[32];
+    char type[16];
+} usb_responder_stat_info_t;
+
+bool usb_responder_file_stat(
+    const usb_responder_file_ops_t* ops, const char* relative_path, usb_responder_stat_info_t* out);
+
 bool usb_responder_file_delete(const usb_responder_file_ops_t* ops, const char* relative_path);
 bool usb_responder_dir_mkdir(usb_responder_file_ops_t* ops, const char* relative_path, bool parents);
 bool usb_responder_file_rename(

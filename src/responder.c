@@ -67,6 +67,8 @@ static const char* msg_type_name(uint16_t type) {
         return "FILE_RENAME";
     case USB_RESPONDER_MSG_FILE_MKDIR:
         return "FILE_MKDIR";
+    case USB_RESPONDER_MSG_FILE_STAT:
+        return "FILE_STAT";
     case USB_RESPONDER_MSG_COMMAND_EXEC:
         return "COMMAND_EXEC";
     case USB_RESPONDER_MSG_COMMAND_RESULT:
@@ -430,7 +432,8 @@ static bool handle_file_list(responder_runtime_t* rt, const usb_responder_frame_
     usb_responder_kv_t kvs[USB_RESPONDER_MAX_KV] = {0};
     size_t kv_count = 0;
     const char* path = NULL;
-    char* listing = NULL;
+    char* file_list = NULL;
+    char* dir_list = NULL;
     usb_responder_kv_t status[2];
     bool ok = false;
 
@@ -441,17 +444,20 @@ static bool handle_file_list(responder_runtime_t* rt, const usb_responder_frame_
     if (!path) {
         path = ".";
     }
-    ok = usb_responder_file_list(&rt->files, path, &listing);
+    ok = usb_responder_file_list(&rt->files, path, &file_list, &dir_list);
     usb_responder_protocol_kv_free(kvs, kv_count);
     if (!ok) {
-        return send_error(rt, in->header.request_id, "list failed");
+        free(file_list);
+        free(dir_list);
+        return send_last_error(rt, in->header.request_id, "list failed");
     }
-    status[0].key = "status";
-    status[0].value = "ok";
-    status[1].key = "entries";
-    status[1].value = listing;
+    status[0].key = "files";
+    status[0].value = file_list;
+    status[1].key = "dirs";
+    status[1].value = dir_list;
     ok = send_kv_response(rt, USB_RESPONDER_MSG_STATUS, in->header.request_id, status, 2);
-    free(listing);
+    free(file_list);
+    free(dir_list);
     return ok;
 }
 
@@ -523,6 +529,35 @@ static bool handle_file_mkdir(responder_runtime_t* rt, const usb_responder_frame
     status.key = "status";
     status.value = "ok";
     return send_kv_response(rt, USB_RESPONDER_MSG_STATUS, in->header.request_id, &status, 1);
+}
+
+static bool handle_file_stat(responder_runtime_t* rt, const usb_responder_frame_t* in) {
+    usb_responder_kv_t kvs[USB_RESPONDER_MAX_KV] = {0};
+    size_t kv_count = 0;
+    const char* path = NULL;
+    usb_responder_stat_info_t st;
+    usb_responder_kv_t status[4];
+
+    memset(&st, 0, sizeof(st));
+    if (!usb_responder_protocol_decode_kv(in->payload, in->header.payload_len, kvs, USB_RESPONDER_MAX_KV, &kv_count)) {
+        return send_error(rt, in->header.request_id, "invalid kv payload");
+    }
+    path = kv_get(kvs, kv_count, "path");
+    if (!path || !usb_responder_file_stat(&rt->files, path, &st)) {
+        usb_responder_protocol_kv_free(kvs, kv_count);
+        return send_last_error(rt, in->header.request_id, "stat failed");
+    }
+    usb_responder_protocol_kv_free(kvs, kv_count);
+
+    status[0].key = "owner";
+    status[0].value = st.owner;
+    status[1].key = "perm";
+    status[1].value = st.perm;
+    status[2].key = "size";
+    status[2].value = st.size;
+    status[3].key = "type";
+    status[3].value = st.type;
+    return send_kv_response(rt, USB_RESPONDER_MSG_STATUS, in->header.request_id, status, 4);
 }
 
 /* 读取整个文本文件，返回 malloc 的缓冲；max_bytes 为最大允许大小。
@@ -749,6 +784,8 @@ static bool handle_frame(responder_runtime_t* rt, const usb_responder_frame_t* i
         return handle_file_rename(rt, in);
     case USB_RESPONDER_MSG_FILE_MKDIR:
         return handle_file_mkdir(rt, in);
+    case USB_RESPONDER_MSG_FILE_STAT:
+        return handle_file_stat(rt, in);
     case USB_RESPONDER_MSG_COMMAND_EXEC:
         return handle_command_exec(rt, in);
     case USB_RESPONDER_MSG_DEVINFO:

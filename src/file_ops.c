@@ -4,6 +4,8 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <grp.h>
+#include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,32 +18,11 @@ static void set_file_error(const char* prefix, const char* path) {
     usb_responder_set_last_error(msg);
 }
 
-static bool validate_relative_path(const char* path) {
-    const char* p = path;
-
-    if (!p || p[0] == '\0') {
-        usb_responder_set_last_error("invalid empty path");
-        return false;
-    }
-    // if (p[0] == '/') {
-    //     usb_responder_set_last_error("absolute paths are not allowed");
-    //     return false;
-    // }
-    // while (*p != '\0') {
-    //     if (p[0] == '.' && p[1] == '.' && (p[2] == '/' || p[2] == '\0')) {
-    //         usb_responder_set_last_error("path traversal is not allowed");
-    //         return false;
-    //     }
-    //     ++p;
-    // }
-    return true;
-}
-
 static bool build_path(
     const usb_responder_file_ops_t* ops, const char* relative, char* out_path, size_t out_size) {
     int n = 0;
 
-    if (!ops || !relative || !out_path || out_size == 0 || !validate_relative_path(relative)) {
+    if (!ops || !relative || !out_path || out_size == 0) {
         return false;
     }
     n = snprintf(out_path, out_size, "%s/%s", ops->media_root, relative);
@@ -216,59 +197,158 @@ bool usb_responder_file_read(
     return usb_responder_read_file_all(path, out_data, out_size);
 }
 
+static bool list_append_line(char** text, size_t* used, size_t* cap, const char* name) {
+    size_t n = strlen(name) + 1;
+    if (*used + n + 1 > *cap) {
+        size_t new_cap = (*cap == 0) ? 256u : *cap;
+        while (new_cap < *used + n + 1) {
+            new_cap *= 2u;
+        }
+        char* next = (char*)realloc(*text, new_cap);
+        if (!next) {
+            return false;
+        }
+        *text = next;
+        *cap = new_cap;
+    }
+    memcpy(*text + *used, name, n - 1);
+    (*text)[*used + n - 1] = '\n';
+    *used += n;
+    return true;
+}
+
+static char* list_finalize(char* text, size_t used) {
+    if (!text) {
+        return (char*)calloc(1, 1);
+    }
+    text[used] = '\0';
+    return text;
+}
+
 bool usb_responder_file_list(
-    const usb_responder_file_ops_t* ops, const char* relative_path, char** out_text) {
+    const usb_responder_file_ops_t* ops, const char* relative_path, char** out_files, char** out_dirs) {
     DIR* dir = NULL;
     struct dirent* de = NULL;
-    char path[USB_RESPONDER_PATH_MAX_LEN];
-    char* text = NULL;
-    size_t used = 0;
-    size_t cap = 0;
+    char dirpath[USB_RESPONDER_PATH_MAX_LEN];
+    char* files = NULL;
+    char* dirs = NULL;
+    size_t fu = 0, fc = 0, du = 0, dc = 0;
 
-    if (!ops || !relative_path || !out_text) {
+    if (!ops || !relative_path || !out_files || !out_dirs) {
         return false;
     }
-    if (!build_path(ops, relative_path, path, sizeof(path))) {
+    *out_files = NULL;
+    *out_dirs = NULL;
+    if (!build_path(ops, relative_path, dirpath, sizeof(dirpath))) {
         return false;
     }
-    dir = opendir(path);
+    dir = opendir(dirpath);
     if (!dir) {
         return false;
     }
     while ((de = readdir(dir)) != NULL) {
-        size_t n = strlen(de->d_name) + 1;
+        char child[USB_RESPONDER_PATH_MAX_LEN];
+        struct stat st;
+        int n = 0;
+
         if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) {
             continue;
         }
-        if (used + n + 1 > cap) {
-            size_t new_cap = (cap == 0) ? 256u : cap;
-            while (new_cap < used + n + 1) {
-                new_cap *= 2u;
-            }
-            char* next = (char*)realloc(text, new_cap);
-            if (!next) {
-                free(text);
+        n = snprintf(child, sizeof(child), "%s/%s", dirpath, de->d_name);
+        if (n <= 0 || (size_t)n >= sizeof(child)) {
+            closedir(dir);
+            free(files);
+            free(dirs);
+            usb_responder_set_last_error("path too long");
+            return false;
+        }
+        if (lstat(child, &st) != 0) {
+            set_file_error("lstat", child);
+            closedir(dir);
+            free(files);
+            free(dirs);
+            return false;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            if (!list_append_line(&dirs, &du, &dc, de->d_name)) {
                 closedir(dir);
+                free(files);
+                free(dirs);
+                usb_responder_set_last_error("oom");
                 return false;
             }
-            text = next;
-            cap = new_cap;
+        } else {
+            if (!list_append_line(&files, &fu, &fc, de->d_name)) {
+                closedir(dir);
+                free(files);
+                free(dirs);
+                usb_responder_set_last_error("oom");
+                return false;
+            }
         }
-        memcpy(text + used, de->d_name, n - 1);
-        text[used + n - 1] = '\n';
-        used += n;
     }
     closedir(dir);
 
-    if (!text) {
-        text = (char*)calloc(1, 1);
-        if (!text) {
-            return false;
-        }
-    } else {
-        text[used] = '\0';
+    *out_files = list_finalize(files, fu);
+    *out_dirs = list_finalize(dirs, du);
+    if (!*out_files || !*out_dirs) {
+        free(*out_files);
+        free(*out_dirs);
+        *out_files = NULL;
+        *out_dirs = NULL;
+        usb_responder_set_last_error("oom");
+        return false;
     }
-    *out_text = text;
+    return true;
+}
+
+bool usb_responder_file_stat(
+    const usb_responder_file_ops_t* ops, const char* relative_path, usb_responder_stat_info_t* out) {
+    char path[USB_RESPONDER_PATH_MAX_LEN];
+    struct stat st;
+    char userbuf[128];
+    char groupbuf[128];
+    struct passwd pws;
+    struct passwd* pw_ptr = NULL;
+    char pwbuf[4096];
+    struct group grs;
+    struct group* gr_ptr = NULL;
+    char grbuf[4096];
+
+    if (!ops || !relative_path || !out) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!build_path(ops, relative_path, path, sizeof(path))) {
+        return false;
+    }
+    if (lstat(path, &st) != 0) {
+        set_file_error("lstat", path);
+        return false;
+    }
+
+    if (getpwuid_r(st.st_uid, &pws, pwbuf, sizeof(pwbuf), &pw_ptr) != 0 || pw_ptr == NULL) {
+        snprintf(userbuf, sizeof(userbuf), "%u", (unsigned)st.st_uid);
+    } else {
+        snprintf(userbuf, sizeof(userbuf), "%s", pw_ptr->pw_name);
+    }
+    if (getgrgid_r(st.st_gid, &grs, grbuf, sizeof(grbuf), &gr_ptr) != 0 || gr_ptr == NULL) {
+        snprintf(groupbuf, sizeof(groupbuf), "%u", (unsigned)st.st_gid);
+    } else {
+        snprintf(groupbuf, sizeof(groupbuf), "%s", gr_ptr->gr_name);
+    }
+    snprintf(out->owner, sizeof(out->owner), "%s:%s", userbuf, groupbuf);
+    snprintf(out->perm, sizeof(out->perm), "%04o", (unsigned)(st.st_mode & 07777));
+    snprintf(out->size, sizeof(out->size), "%llu", (unsigned long long)st.st_size);
+    if (S_ISREG(st.st_mode)) {
+        snprintf(out->type, sizeof(out->type), "file");
+    } else if (S_ISDIR(st.st_mode)) {
+        snprintf(out->type, sizeof(out->type), "dir");
+    } else if (S_ISLNK(st.st_mode)) {
+        snprintf(out->type, sizeof(out->type), "link");
+    } else {
+        snprintf(out->type, sizeof(out->type), "other");
+    }
     return true;
 }
 

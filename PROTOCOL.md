@@ -48,6 +48,7 @@ offset  size  field
 - `15` `FILE_DELETE`
 - `16` `FILE_RENAME`
 - `17` `FILE_MKDIR`
+- `18` `FILE_STAT`
 
 ### 3.3 命令执行
 
@@ -78,7 +79,8 @@ repeat count times:
 - `parents`（可选：`1` / `true` / `yes` 表示创建父目录，见 `FILE_MKDIR`）
 - `status`
 - `message`
-- `entries`
+- `files` / `dirs`（`FILE_LIST` 成功应答：按行分隔的条目名）
+- `owner` / `perm` / `size` / `type`（`FILE_STAT` 应答，见下文）
 
 ## 5. 典型交互流程
 
@@ -108,7 +110,21 @@ repeat count times:
 ## 5.4 列目录
 
 1) Host -> `FILE_LIST`，KV: `path=.`（或子目录）  
-2) Device -> `STATUS`，KV: `entries=<按行分隔文件名>`
+2) Device -> `STATUS`，**仅**两个键：  
+   - `files`：非目录项（普通文件、符号链接、设备等）名称，每行一个，UTF-8  
+   - `dirs`：子目录名称，每行一个，UTF-8  
+   不含 `.` / `..`；某一类为空时对应值为空字符串。
+
+## 5.4.1 路径状态（stat）
+
+1) Host -> `FILE_STAT`，KV: `path=<relative_path>`  
+2) Device -> `STATUS`，KV：  
+   - `owner`：`用户名:组名`；若无 passwd/group 解析则退化为 `uid:gid`（十进制）  
+   - `perm`：低位权限，4 位八进制（`st_mode & 07777`，如 `0644`、`0755`）  
+   - `size`：十进制 `st_size`（目录为目录项所占块统计的内核语义，`lstat` 结果）  
+   - `type`：`file` / `dir` / `link` / `other`
+
+失败返回 `ERROR`。
 
 ## 5.5 删除 / 创建目录 / 重命名
 

@@ -160,13 +160,18 @@ class UsbResponderClient:
         with open(local_path, "wb") as out:
             out.write(fr.payload)
 
-    def file_list(self, path: str = ".") -> List[str]:
+    def file_list(self, path: str = ".") -> Tuple[List[str], List[str]]:
         rid = self._send_frame(P.MSG_FILE_LIST, P.encode_kv([("path", path)]))
         kv = self._expect_kv(rid)
-        ent = kv.get("entries", "")
-        if not ent.strip():
-            return []
-        return ent.splitlines()
+        files_raw = kv.get("files", "")
+        dirs_raw = kv.get("dirs", "")
+        files = [line for line in files_raw.splitlines() if line]
+        dirs = [line for line in dirs_raw.splitlines() if line]
+        return files, dirs
+
+    def file_stat(self, path: str) -> Dict[str, str]:
+        rid = self._send_frame(P.MSG_FILE_STAT, P.encode_kv([("path", path)]))
+        return self._expect_kv(rid)
 
     def file_delete(self, remote_path: str) -> None:
         rid = self._send_frame(P.MSG_FILE_DELETE, P.encode_kv([("path", remote_path)]))
@@ -261,6 +266,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sk.add_argument("path")
     sk.add_argument("-p", "--parents", action="store_true", help="递归创建父目录（类似 mkdir -p）")
 
+    ss = sub.add_parser("stat", help="路径元数据（owner/perm/size/type）")
+    ss.add_argument("path")
+
     se = sub.add_parser("exec", help="在设备上执行 shell 命令（/bin/sh -c）")
     se.add_argument("--shell-timeout", type=int, default=0, help="设备侧超时 ms（0=设备默认）")
     se.add_argument("--max-stdout", type=int, default=0, help="stdout 上限（0=设备默认）")
@@ -298,8 +306,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         elif args.cmd == "get":
             cl.file_get(args.remote, args.local)
         elif args.cmd == "ls":
-            for name in cl.file_list(args.path):
+            files, dirs = cl.file_list(args.path)
+            for name in dirs:
+                print(f"{name}/")
+            for name in files:
                 print(name)
+        elif args.cmd == "stat":
+            kv = cl.file_stat(args.path)
+            for k in ("owner", "perm", "size", "type"):
+                print(f"{k}={kv.get(k, '')}")
         elif args.cmd == "rm":
             cl.file_delete(args.path)
         elif args.cmd == "mv":
