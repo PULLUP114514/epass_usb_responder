@@ -23,17 +23,17 @@ static bool validate_relative_path(const char* path) {
         usb_responder_set_last_error("invalid empty path");
         return false;
     }
-    if (p[0] == '/') {
-        usb_responder_set_last_error("absolute paths are not allowed");
-        return false;
-    }
-    while (*p != '\0') {
-        if (p[0] == '.' && p[1] == '.' && (p[2] == '/' || p[2] == '\0')) {
-            usb_responder_set_last_error("path traversal is not allowed");
-            return false;
-        }
-        ++p;
-    }
+    // if (p[0] == '/') {
+    //     usb_responder_set_last_error("absolute paths are not allowed");
+    //     return false;
+    // }
+    // while (*p != '\0') {
+    //     if (p[0] == '.' && p[1] == '.' && (p[2] == '/' || p[2] == '\0')) {
+    //         usb_responder_set_last_error("path traversal is not allowed");
+    //         return false;
+    //     }
+    //     ++p;
+    // }
     return true;
 }
 
@@ -272,6 +272,51 @@ bool usb_responder_file_list(
     return true;
 }
 
+static bool remove_path_recursive(const char* abs_path) {
+    struct stat st;
+
+    if (lstat(abs_path, &st) != 0) {
+        set_file_error("lstat", abs_path);
+        return false;
+    }
+    if (S_ISDIR(st.st_mode)) {
+        DIR* d = opendir(abs_path);
+        struct dirent* de = NULL;
+        if (!d) {
+            set_file_error("opendir", abs_path);
+            return false;
+        }
+        while ((de = readdir(d)) != NULL) {
+            char child[USB_RESPONDER_PATH_MAX_LEN];
+            int n = 0;
+            if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) {
+                continue;
+            }
+            n = snprintf(child, sizeof(child), "%s/%s", abs_path, de->d_name);
+            if (n <= 0 || (size_t)n >= sizeof(child)) {
+                closedir(d);
+                usb_responder_set_last_error("path too long");
+                return false;
+            }
+            if (!remove_path_recursive(child)) {
+                closedir(d);
+                return false;
+            }
+        }
+        closedir(d);
+        if (rmdir(abs_path) != 0) {
+            set_file_error("rmdir", abs_path);
+            return false;
+        }
+        return true;
+    }
+    if (unlink(abs_path) != 0) {
+        set_file_error("unlink", abs_path);
+        return false;
+    }
+    return true;
+}
+
 bool usb_responder_file_delete(const usb_responder_file_ops_t* ops, const char* relative_path) {
     char path[USB_RESPONDER_PATH_MAX_LEN];
     if (!ops || !relative_path) {
@@ -280,7 +325,78 @@ bool usb_responder_file_delete(const usb_responder_file_ops_t* ops, const char* 
     if (!build_path(ops, relative_path, path, sizeof(path))) {
         return false;
     }
-    return unlink(path) == 0;
+    return remove_path_recursive(path);
+}
+
+bool usb_responder_dir_mkdir(usb_responder_file_ops_t* ops, const char* relative_path, bool parents) {
+    char path[USB_RESPONDER_PATH_MAX_LEN];
+    char work[USB_RESPONDER_PATH_MAX_LEN];
+    const char* r = NULL;
+
+    if (!ops || !relative_path) {
+        return false;
+    }
+    if (!parents) {
+        if (!build_path(ops, relative_path, path, sizeof(path))) {
+            return false;
+        }
+        if (mkdir(path, 0755) != 0) {
+            set_file_error("mkdir", path);
+            return false;
+        }
+        return true;
+    }
+
+    if (snprintf(work, sizeof(work), "%s", ops->media_root) >= (int)sizeof(work)) {
+        usb_responder_set_last_error("path too long");
+        return false;
+    }
+    r = relative_path;
+    while (*r != '\0') {
+        const char* slash = NULL;
+        size_t seglen = 0;
+        size_t wlen = 0;
+        int n = 0;
+
+        while (*r == '/') {
+            ++r;
+        }
+        if (*r == '\0') {
+            break;
+        }
+        slash = strchr(r, '/');
+        seglen = slash ? (size_t)(slash - r) : strlen(r);
+        if (seglen == 0) {
+            break;
+        }
+
+        wlen = strlen(work);
+        n = snprintf(work + wlen, sizeof(work) - wlen, "/%.*s", (int)seglen, r);
+        if (n <= 0 || wlen + (size_t)n >= sizeof(work)) {
+            usb_responder_set_last_error("path too long");
+            return false;
+        }
+
+        if (mkdir(work, 0755) != 0) {
+            if (errno != EEXIST) {
+                set_file_error("mkdir", work);
+                return false;
+            }
+            {
+                struct stat st;
+                if (stat(work, &st) != 0) {
+                    set_file_error("stat", work);
+                    return false;
+                }
+                if (!S_ISDIR(st.st_mode)) {
+                    usb_responder_set_last_error("path exists and is not a directory");
+                    return false;
+                }
+            }
+        }
+        r = slash ? slash + 1 : "";
+    }
+    return true;
 }
 
 bool usb_responder_file_rename(

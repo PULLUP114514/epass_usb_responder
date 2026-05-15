@@ -10,6 +10,7 @@ typedef struct usb_responder_config {
     uint32_t default_timeout_ms;
     uint32_t max_stdout;
     uint32_t max_stderr;
+    bool verbose;
 } usb_responder_config_t;
 
 bool usb_responder_run(const usb_responder_config_t* config);

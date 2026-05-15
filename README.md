@@ -33,8 +33,10 @@ cmake --build build
 
 ```text
 epass_usb_responder --ffs <FunctionFS 挂载目录> --media-root <允许访问的根目录>
-  [--timeout-ms N] [--max-stdout N] [--max-stderr N]
+  [-v|--verbose] [--timeout-ms N] [--max-stdout N] [--max-stderr N]
 ```
+
+`-v` / `--verbose` 打开 stderr 调试日志（帧头、ep0 事件、收发等待等）；默认静默，仅保留 `perror` 等关键错误与程序退出码。
 
 ## 上位机（PC）
 

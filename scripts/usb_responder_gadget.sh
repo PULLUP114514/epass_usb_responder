@@ -13,6 +13,7 @@
 #   FFS_MOUNT         挂载点，默认 /dev/ffs-epass
 #   MEDIA_ROOT        usb_responder --media-root，默认 /mnt
 #   USB_RESPONDER     可执行文件路径，默认 epass_usb_responder
+#   USB_RESPONDER_VERBOSE  设为 1/true/yes 时启动加 -v（详细日志）
 #   ID_VENDOR         默认 0x1d6b
 #   ID_PRODUCT        默认 0x0203（与常见 Linux Foundation 测试 PID 不同，请按需改）
 #   MS_VENDOR_CODE    OS 描述符 b_vendor_code，默认 0xcd（须与主机侧 WCID 探测一致）
@@ -129,6 +130,11 @@ gadget_start() {
     mkdir -p "$FFS_MOUNT"
     mount -t functionfs "$FFS_INSTANCE" "$FFS_MOUNT" || die "无法 mount functionfs $FFS_INSTANCE -> $FFS_MOUNT"
 
+    RESPONDER_VERBOSE_ARG=
+    case "${USB_RESPONDER_VERBOSE:-}" in
+        1|true|yes) RESPONDER_VERBOSE_ARG="-v" ;;
+    esac
+
     # if command -v start-stop-daemon >/dev/null 2>&1; then
     #     start-stop-daemon -S -q -m -b -p "$RESPONDER_PIDFILE" -x "$USB_RESPONDER" -- \
     #         --ffs "$FFS_MOUNT" \
@@ -136,6 +142,7 @@ gadget_start() {
     #         "$@"
     # else
         "$USB_RESPONDER" \
+            $RESPONDER_VERBOSE_ARG \
             --ffs "$FFS_MOUNT" \
             --media-root "$MEDIA_ROOT" \
             "$@" &

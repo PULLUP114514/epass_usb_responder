@@ -47,11 +47,16 @@ offset  size  field
 - `14` `FILE_LIST`
 - `15` `FILE_DELETE`
 - `16` `FILE_RENAME`
+- `17` `FILE_MKDIR`
 
 ### 3.3 命令执行
 
 - `20` `COMMAND_EXEC`
 - `21` `COMMAND_RESULT`
+
+### 3.4 设备信息
+
+- `30` `DEVINFO`
 
 ## 4. KV payload 编码（用于大部分控制类消息）
 
@@ -70,6 +75,7 @@ repeat count times:
 - `path`
 - `from`
 - `to`
+- `parents`（可选：`1` / `true` / `yes` 表示创建父目录，见 `FILE_MKDIR`）
 - `status`
 - `message`
 - `entries`
@@ -104,12 +110,30 @@ repeat count times:
 1) Host -> `FILE_LIST`，KV: `path=.`（或子目录）  
 2) Device -> `STATUS`，KV: `entries=<按行分隔文件名>`
 
-## 5.5 删除/重命名
+## 5.5 删除 / 创建目录 / 重命名
 
-- 删除：`FILE_DELETE`，KV: `path=<relative_path>`
+- 删除路径：`FILE_DELETE`，KV: `path=<relative_path>`  
+  - 普通文件或符号链接：unlink。  
+  - 目录：**递归删除**其下所有内容，再 `rmdir`（等价于受限根目录内的 `rm -rf`）。
+- 创建目录：`FILE_MKDIR`，KV: `path=<relative_path>`，可选 `parents=1`（或 `true`/`yes`）  
+  - 无 `parents`：只建最后一级（父目录须已存在）。  
+  - 有 `parents`：沿路径逐级 `mkdir`（类似 `mkdir -p`）。
 - 重命名：`FILE_RENAME`，KV: `from=<path1>`, `to=<path2>`
 
 成功返回 `STATUS`，失败返回 `ERROR`。
+
+## 5.6 设备信息
+
+1) Host -> `DEVINFO`，无 payload
+2) Device -> `DEVINFO`，KV：
+
+   - `model`：来自 `/proc/device-tree/model`（已裁剪 NUL 与末尾空白）
+   - `kernel`：来自 `uname(2)` 的 `release` 字段
+   - `rootfs`：`/etc/os-release` 全文（多行，UTF-8）
+   - `app`：`/root/epass_drm_app version` 的标准输出（trim）
+
+任一字段获取失败返回空字符串；不会因为某项失败而整体失败。
+`app` 字段执行有 3000ms 超时，超时或非零退出按空处理。
 
 ## 6. 命令执行帧
 

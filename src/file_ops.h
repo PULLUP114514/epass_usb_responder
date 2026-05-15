@@ -39,6 +39,7 @@ bool usb_responder_file_read(
 bool usb_responder_file_list(
     const usb_responder_file_ops_t* ops, const char* relative_path, char** out_text);
 bool usb_responder_file_delete(const usb_responder_file_ops_t* ops, const char* relative_path);
+bool usb_responder_dir_mkdir(usb_responder_file_ops_t* ops, const char* relative_path, bool parents);
 bool usb_responder_file_rename(
     const usb_responder_file_ops_t* ops, const char* from_relative, const char* to_relative);
 

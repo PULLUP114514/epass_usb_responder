@@ -1,5 +1,6 @@
 #include "responder.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,7 +8,7 @@
 static void print_usage(const char* argv0) {
     fprintf(stderr,
             "Usage: %s --ffs <mount_dir> --media-root <dir> "
-            "[--timeout-ms N] [--max-stdout N] [--max-stderr N]\n",
+            "[-v|--verbose] [--timeout-ms N] [--max-stdout N] [--max-stderr N]\n",
             argv0);
 }
 
@@ -20,6 +21,8 @@ int main(int argc, char** argv) {
             cfg.ffs_mount = argv[++i];
         } else if (strcmp(argv[i], "--media-root") == 0 && i + 1 < argc) {
             cfg.media_root = argv[++i];
+        } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
+            cfg.verbose = true;
         } else if (strcmp(argv[i], "--timeout-ms") == 0 && i + 1 < argc) {
             cfg.default_timeout_ms = (uint32_t)strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "--max-stdout") == 0 && i + 1 < argc) {

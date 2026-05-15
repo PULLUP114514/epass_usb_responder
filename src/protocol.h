@@ -21,8 +21,10 @@ typedef enum usb_responder_msg_type {
     USB_RESPONDER_MSG_FILE_LIST = 14,
     USB_RESPONDER_MSG_FILE_DELETE = 15,
     USB_RESPONDER_MSG_FILE_RENAME = 16,
+    USB_RESPONDER_MSG_FILE_MKDIR = 17,
     USB_RESPONDER_MSG_COMMAND_EXEC = 20,
     USB_RESPONDER_MSG_COMMAND_RESULT = 21,
+    USB_RESPONDER_MSG_DEVINFO = 30,
 } usb_responder_msg_type_t;
 
 typedef struct usb_responder_frame_header {

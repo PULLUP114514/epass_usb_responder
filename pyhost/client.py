@@ -176,6 +176,25 @@ class UsbResponderClient:
         rid = self._send_frame(P.MSG_FILE_RENAME, P.encode_kv([("from", src), ("to", dst)]))
         self._expect_kv(rid)
 
+    def dir_mkdir(self, path: str, parents: bool = False) -> None:
+        items: List[Tuple[str, str]] = [("path", path)]
+        if parents:
+            items.append(("parents", "1"))
+        rid = self._send_frame(P.MSG_FILE_MKDIR, P.encode_kv(items))
+        self._expect_kv(rid)
+
+    def devinfo(self) -> Dict[str, str]:
+        rid = self._send_frame(P.MSG_DEVINFO)
+        fr = self._recv_frame()
+        if fr.request_id != rid:
+            raise RuntimeError(f"request_id 不匹配: 期望 {rid} 收到 {fr.request_id}")
+        if fr.type == P.MSG_ERROR:
+            kv = P.decode_kv(fr.payload)
+            raise RuntimeError(kv.get("message", "ERROR"))
+        if fr.type != P.MSG_DEVINFO:
+            raise RuntimeError(f"意外类型 {fr.type}，期望 DEVINFO")
+        return P.decode_kv(fr.payload)
+
     def command_exec(
         self,
         command: str,
@@ -217,6 +236,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("hello", help="握手，打印 STATUS KV")
 
+    sub.add_parser("devinfo", help="读取设备信息（model/kernel/rootfs/app）")
+
     sp = sub.add_parser("put", help="上传文件")
     sp.add_argument("local")
     sp.add_argument("remote")
@@ -229,12 +250,16 @@ def _build_parser() -> argparse.ArgumentParser:
     sl = sub.add_parser("ls", help="列目录")
     sl.add_argument("path", nargs="?", default=".")
 
-    sd = sub.add_parser("rm", help="删除文件")
+    sd = sub.add_parser("rm", help="删除文件或目录（目录为递归删除）")
     sd.add_argument("path")
 
     sm = sub.add_parser("mv", help="重命名")
     sm.add_argument("src")
     sm.add_argument("dst")
+
+    sk = sub.add_parser("mkdir", help="创建目录")
+    sk.add_argument("path")
+    sk.add_argument("-p", "--parents", action="store_true", help="递归创建父目录（类似 mkdir -p）")
 
     se = sub.add_parser("exec", help="在设备上执行 shell 命令（/bin/sh -c）")
     se.add_argument("--shell-timeout", type=int, default=0, help="设备侧超时 ms（0=设备默认）")
@@ -259,6 +284,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             kv = cl.hello()
             for k in sorted(kv.keys()):
                 print(f"{k}={kv[k]}")
+        elif args.cmd == "devinfo":
+            kv = cl.devinfo()
+            for k in ("model", "kernel", "rootfs", "app"):
+                v = kv.get(k, "")
+                if "\n" in v:
+                    print(f"--- {k} ---")
+                    print(v)
+                else:
+                    print(f"{k}={v}")
         elif args.cmd == "put":
             cl.file_put(args.local, args.remote, chunk_size=args.chunk)
         elif args.cmd == "get":
@@ -270,6 +304,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             cl.file_delete(args.path)
         elif args.cmd == "mv":
             cl.file_rename(args.src, args.dst)
+        elif args.cmd == "mkdir":
+            cl.dir_mkdir(args.path, parents=args.parents)
         elif args.cmd == "exec":
             cmd = " ".join(args.args).strip()
             if not cmd:
