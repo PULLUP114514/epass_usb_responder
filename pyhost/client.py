@@ -129,9 +129,18 @@ class UsbResponderClient:
         rid = self._send_frame(P.MSG_HELLO)
         return self._expect_kv(rid)
 
-    def file_put(self, local_path: str, remote_path: str, chunk_size: int = DEFAULT_CHUNK) -> None:
+    def file_put(
+        self,
+        local_path: str,
+        remote_path: str,
+        chunk_size: int = DEFAULT_CHUNK,
+        desire_storage: Optional[str] = None,
+    ) -> None:
         rid = self._next_id()
-        begin = P.encode_kv([("path", remote_path)])
+        items: List[Tuple[str, str]] = [("path", remote_path)]
+        if desire_storage:
+            items.append(("desire_storage", desire_storage))
+        begin = P.encode_kv(items)
         self._send_frame(P.MSG_FILE_PUT_BEGIN, begin, req_id=rid)
         self._expect_kv(rid)
 
@@ -173,18 +182,26 @@ class UsbResponderClient:
         rid = self._send_frame(P.MSG_FILE_STAT, P.encode_kv([("path", path)]))
         return self._expect_kv(rid)
 
-    def file_delete(self, remote_path: str) -> None:
-        rid = self._send_frame(P.MSG_FILE_DELETE, P.encode_kv([("path", remote_path)]))
+    def file_delete(self, remote_path: str, desire_storage: Optional[str] = None) -> None:
+        items: List[Tuple[str, str]] = [("path", remote_path)]
+        if desire_storage:
+            items.append(("desire_storage", desire_storage))
+        rid = self._send_frame(P.MSG_FILE_DELETE, P.encode_kv(items))
         self._expect_kv(rid)
 
-    def file_rename(self, src: str, dst: str) -> None:
-        rid = self._send_frame(P.MSG_FILE_RENAME, P.encode_kv([("from", src), ("to", dst)]))
+    def file_rename(self, src: str, dst: str, desire_storage: Optional[str] = None) -> None:
+        items: List[Tuple[str, str]] = [("from", src), ("to", dst)]
+        if desire_storage:
+            items.append(("desire_storage", desire_storage))
+        rid = self._send_frame(P.MSG_FILE_RENAME, P.encode_kv(items))
         self._expect_kv(rid)
 
-    def dir_mkdir(self, path: str, parents: bool = False) -> None:
+    def dir_mkdir(self, path: str, parents: bool = False, desire_storage: Optional[str] = None) -> None:
         items: List[Tuple[str, str]] = [("path", path)]
         if parents:
             items.append(("parents", "1"))
+        if desire_storage:
+            items.append(("desire_storage", desire_storage))
         rid = self._send_frame(P.MSG_FILE_MKDIR, P.encode_kv(items))
         self._expect_kv(rid)
 
@@ -241,12 +258,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("hello", help="握手，打印 STATUS KV")
 
-    sub.add_parser("devinfo", help="读取设备信息（model/kernel/rootfs/app）")
+    sub.add_parser("devinfo", help="读取设备信息（model/kernel/rootfs/app/存储状态）")
 
     sp = sub.add_parser("put", help="上传文件")
     sp.add_argument("local")
     sp.add_argument("remote")
     sp.add_argument("--chunk", type=int, default=DEFAULT_CHUNK, help="每片字节数（默认约 16KiB）")
+    sp.add_argument("--desire-storage", choices=("nand", "sd"), default=None, help="期望写入存储")
 
     sg = sub.add_parser("get", help="下载文件")
     sg.add_argument("remote")
@@ -257,14 +275,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sd = sub.add_parser("rm", help="删除文件或目录（目录为递归删除）")
     sd.add_argument("path")
+    sd.add_argument("--desire-storage", choices=("nand", "sd"), default=None, help="期望删除目标所在存储")
 
     sm = sub.add_parser("mv", help="重命名")
     sm.add_argument("src")
     sm.add_argument("dst")
+    sm.add_argument("--desire-storage", choices=("nand", "sd"), default=None, help="期望源和目标所在存储")
 
     sk = sub.add_parser("mkdir", help="创建目录")
     sk.add_argument("path")
     sk.add_argument("-p", "--parents", action="store_true", help="递归创建父目录（类似 mkdir -p）")
+    sk.add_argument("--desire-storage", choices=("nand", "sd"), default=None, help="期望创建目标所在存储")
 
     ss = sub.add_parser("stat", help="路径元数据（owner/perm/size/type）")
     ss.add_argument("path")
@@ -294,7 +315,17 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"{k}={kv[k]}")
         elif args.cmd == "devinfo":
             kv = cl.devinfo()
-            for k in ("model", "kernel", "rootfs", "app"):
+            for k in (
+                "model",
+                "kernel",
+                "rootfs",
+                "app",
+                "sd_mounted",
+                "nand_total_bytes",
+                "nand_free_bytes",
+                "sd_total_bytes",
+                "sd_free_bytes",
+            ):
                 v = kv.get(k, "")
                 if "\n" in v:
                     print(f"--- {k} ---")
@@ -302,7 +333,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 else:
                     print(f"{k}={v}")
         elif args.cmd == "put":
-            cl.file_put(args.local, args.remote, chunk_size=args.chunk)
+            cl.file_put(args.local, args.remote, chunk_size=args.chunk, desire_storage=args.desire_storage)
         elif args.cmd == "get":
             cl.file_get(args.remote, args.local)
         elif args.cmd == "ls":
@@ -316,11 +347,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             for k in ("owner", "perm", "size", "type"):
                 print(f"{k}={kv.get(k, '')}")
         elif args.cmd == "rm":
-            cl.file_delete(args.path)
+            cl.file_delete(args.path, desire_storage=args.desire_storage)
         elif args.cmd == "mv":
-            cl.file_rename(args.src, args.dst)
+            cl.file_rename(args.src, args.dst, desire_storage=args.desire_storage)
         elif args.cmd == "mkdir":
-            cl.dir_mkdir(args.path, parents=args.parents)
+            cl.dir_mkdir(args.path, parents=args.parents, desire_storage=args.desire_storage)
         elif args.cmd == "exec":
             cmd = " ".join(args.args).strip()
             if not cmd:

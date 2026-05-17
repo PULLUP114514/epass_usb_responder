@@ -6,7 +6,6 @@
 
 typedef struct usb_responder_config {
     const char* ffs_mount;
-    const char* media_root;
     uint32_t default_timeout_ms;
     uint32_t max_stdout;
     uint32_t max_stderr;

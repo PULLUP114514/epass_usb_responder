@@ -7,7 +7,7 @@
 
 static void print_usage(const char* argv0) {
     fprintf(stderr,
-            "Usage: %s --ffs <mount_dir> --media-root <dir> "
+            "Usage: %s --ffs <mount_dir> "
             "[-v|--verbose] [--timeout-ms N] [--max-stdout N] [--max-stderr N]\n",
             argv0);
 }
@@ -19,8 +19,6 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--ffs") == 0 && i + 1 < argc) {
             cfg.ffs_mount = argv[++i];
-        } else if (strcmp(argv[i], "--media-root") == 0 && i + 1 < argc) {
-            cfg.media_root = argv[++i];
         } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
             cfg.verbose = true;
         } else if (strcmp(argv[i], "--timeout-ms") == 0 && i + 1 < argc) {
@@ -34,7 +32,7 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
-    if (!cfg.ffs_mount || !cfg.media_root) {
+    if (!cfg.ffs_mount) {
         print_usage(argv[0]);
         return 1;
     }

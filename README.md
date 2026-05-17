@@ -1,6 +1,6 @@
 # epass_usb_responder
 
-电子通行证 自定义USB协议实现程序。通过 **bulk 端点** 与主机通信：在限定目录内做文件读写/列表等操作，并可执行命令（带超时与输出上限）。应用层为自定义二进制帧（魔数 `EPAS`、CRC32），详见仓库根目录 [PROTOCOL.md](PROTOCOL.md)。
+电子通行证 自定义USB协议实现程序。通过 **bulk 端点** 与主机通信：按设备根文件树做文件读写/列表等操作，并可执行命令（带超时与输出上限）。应用层为自定义二进制帧（魔数 `EPAS`、CRC32），详见仓库根目录 [PROTOCOL.md](PROTOCOL.md)。
 
 主要目的是实现usb连接手机等功能。做了文件传输和命令执行。
 
@@ -32,11 +32,13 @@ cmake --build build
 3. 程序用法：
 
 ```text
-epass_usb_responder --ffs <FunctionFS 挂载目录> --media-root <允许访问的根目录>
+epass_usb_responder --ffs <FunctionFS 挂载目录>
   [-v|--verbose] [--timeout-ms N] [--max-stdout N] [--max-stderr N]
 ```
 
 `-v` / `--verbose` 打开 stderr 调试日志（帧头、ep0 事件、收发等待等）；默认静默，仅保留 `perror` 等关键错误与程序退出码。
+
+文件协议路径从设备 `/` 解析；例如 `assets/a.bin` 对应 `/assets/a.bin`，`sd/assets/a.bin` 对应 `/sd/assets/a.bin`。`devinfo` 会报告 `/sd` 是否挂载到 mmc 设备以及 NAND/SD 容量。
 
 ## 上位机（PC）
 

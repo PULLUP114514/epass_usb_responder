@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
 static void set_file_error(const char* prefix, const char* path) {
@@ -18,19 +19,184 @@ static void set_file_error(const char* prefix, const char* path) {
     usb_responder_set_last_error(msg);
 }
 
-static bool build_path(
-    const usb_responder_file_ops_t* ops, const char* relative, char* out_path, size_t out_size) {
-    int n = 0;
+const char* usb_responder_storage_name(usb_responder_storage_t storage) {
+    switch (storage) {
+    case USB_RESPONDER_STORAGE_NAND:
+        return "nand";
+    case USB_RESPONDER_STORAGE_SD:
+        return "sd";
+    default:
+        return "unknown";
+    }
+}
 
-    if (!ops || !relative || !out_path || out_size == 0) {
+bool usb_responder_storage_from_name(const char* name, usb_responder_storage_t* out) {
+    if (!name || !out) {
         return false;
     }
-    n = snprintf(out_path, out_size, "%s/%s", ops->media_root, relative);
-    if (n <= 0 || (size_t)n >= out_size) {
-        usb_responder_set_last_error("path too long");
+    if (strcmp(name, "nand") == 0) {
+        *out = USB_RESPONDER_STORAGE_NAND;
+        return true;
+    }
+    if (strcmp(name, "sd") == 0) {
+        *out = USB_RESPONDER_STORAGE_SD;
+        return true;
+    }
+    return false;
+}
+
+static bool path_is_storage_root(const char* abs_path) {
+    return strcmp(abs_path, "/") == 0 || strcmp(abs_path, "/sd") == 0;
+}
+
+static bool path_component_is_dotdot(const char* start, size_t len) {
+    return len == 2 && start[0] == '.' && start[1] == '.';
+}
+
+static bool path_component_is_dot(const char* start, size_t len) {
+    return len == 1 && start[0] == '.';
+}
+
+static bool build_path(const char* relative, char* out_path, size_t out_size, usb_responder_storage_t* out_storage) {
+    const char* r = relative;
+    size_t used = 1;
+    bool saw_component = false;
+    usb_responder_storage_t storage = USB_RESPONDER_STORAGE_NAND;
+
+    if (!relative || !out_path || out_size < 2) {
+        return false;
+    }
+
+    out_path[0] = '/';
+    out_path[1] = '\0';
+    while (*r != '\0') {
+        const char* slash = NULL;
+        size_t seglen = 0;
+
+        while (*r == '/') {
+            ++r;
+        }
+        if (*r == '\0') {
+            break;
+        }
+        slash = strchr(r, '/');
+        seglen = slash ? (size_t)(slash - r) : strlen(r);
+        if (path_component_is_dotdot(r, seglen)) {
+            usb_responder_set_last_error("path traversal not allowed");
+            return false;
+        }
+        if (!path_component_is_dot(r, seglen)) {
+            if (!saw_component && seglen == 2 && r[0] == 's' && r[1] == 'd') {
+                storage = USB_RESPONDER_STORAGE_SD;
+            }
+            if (used + (used > 1 ? 1u : 0u) + seglen >= out_size) {
+                usb_responder_set_last_error("path too long");
+                return false;
+            }
+            if (used > 1) {
+                out_path[used++] = '/';
+            }
+            memcpy(out_path + used, r, seglen);
+            used += seglen;
+            out_path[used] = '\0';
+            saw_component = true;
+        }
+        r = slash ? slash + 1 : "";
+    }
+
+    if (out_storage) {
+        *out_storage = storage;
+    }
+    return true;
+}
+
+static bool path_storage_matches_desire(usb_responder_storage_t actual, const char* desire_storage) {
+    usb_responder_storage_t desired;
+
+    if (!desire_storage || desire_storage[0] == '\0') {
+        return true;
+    }
+    if (!usb_responder_storage_from_name(desire_storage, &desired)) {
+        usb_responder_set_last_error("invalid desire_storage");
+        return false;
+    }
+    if (desired != actual) {
+        char msg[128];
+        snprintf(msg,
+                 sizeof(msg),
+                 "desire_storage=%s but path is on %s",
+                 usb_responder_storage_name(desired),
+                 usb_responder_storage_name(actual));
+        usb_responder_set_last_error(msg);
         return false;
     }
     return true;
+}
+
+static bool read_mountinfo_sd(char* source, size_t source_size) {
+    FILE* f = NULL;
+    char line[2048];
+    bool found = false;
+
+    if (!source || source_size == 0) {
+        return false;
+    }
+    source[0] = '\0';
+    f = fopen("/proc/self/mountinfo", "r");
+    if (!f) {
+        return false;
+    }
+    while (fgets(line, sizeof(line), f)) {
+        char mount_point[USB_RESPONDER_PATH_MAX_LEN];
+        char fs_type[128];
+        char mount_source[USB_RESPONDER_PATH_MAX_LEN];
+        char* sep = strstr(line, " - ");
+
+        mount_point[0] = '\0';
+        fs_type[0] = '\0';
+        mount_source[0] = '\0';
+        if (sscanf(line, "%*s %*s %*s %*s %4095s %*s", mount_point) != 1) {
+            continue;
+        }
+        if (!sep || strcmp(mount_point, "/sd") != 0) {
+            continue;
+        }
+        if (sscanf(sep + 3, "%127s %4095s", fs_type, mount_source) != 2) {
+            continue;
+        }
+        if (strstr(mount_source, "/dev/mmcblk") != NULL) {
+            snprintf(source, source_size, "%s", mount_source);
+            found = true;
+            break;
+        }
+    }
+    fclose(f);
+    return found;
+}
+
+static bool is_sd_mounted(void) {
+    char source[USB_RESPONDER_PATH_MAX_LEN];
+    return read_mountinfo_sd(source, sizeof(source));
+}
+
+static bool ensure_storage_writeable(usb_responder_storage_t storage) {
+    if (storage == USB_RESPONDER_STORAGE_SD && !is_sd_mounted()) {
+        usb_responder_set_last_error("sd storage is not mounted on mmc");
+        return false;
+    }
+    return true;
+}
+
+static void storage_statvfs_or_zero(const char* path, uint64_t* total_bytes, uint64_t* free_bytes) {
+    struct statvfs sv;
+
+    *total_bytes = 0;
+    *free_bytes = 0;
+    if (statvfs(path, &sv) != 0) {
+        return;
+    }
+    *total_bytes = (uint64_t)sv.f_blocks * (uint64_t)sv.f_frsize;
+    *free_bytes = (uint64_t)sv.f_bavail * (uint64_t)sv.f_frsize;
 }
 
 static usb_responder_upload_session_t* find_session(usb_responder_file_ops_t* ops, uint32_t transfer_id) {
@@ -52,16 +218,24 @@ static usb_responder_upload_session_t* alloc_session(usb_responder_file_ops_t* o
     return NULL;
 }
 
-bool usb_responder_file_ops_init(usb_responder_file_ops_t* ops, const char* media_root) {
-    if (!ops || !media_root || media_root[0] == '\0') {
-        usb_responder_set_last_error("invalid media root");
+bool usb_responder_file_ops_init(usb_responder_file_ops_t* ops) {
+    if (!ops) {
+        usb_responder_set_last_error("invalid file ops");
         return false;
     }
     memset(ops, 0, sizeof(*ops));
-    if (snprintf(ops->media_root, sizeof(ops->media_root), "%s", media_root) >=
-        (int)sizeof(ops->media_root)) {
-        usb_responder_set_last_error("media root too long");
+    return true;
+}
+
+bool usb_responder_storage_info_read(usb_responder_storage_info_t* out) {
+    if (!out) {
         return false;
+    }
+    memset(out, 0, sizeof(*out));
+    storage_statvfs_or_zero("/", &out->nand_total_bytes, &out->nand_free_bytes);
+    out->sd_mounted = is_sd_mounted();
+    if (out->sd_mounted) {
+        storage_statvfs_or_zero("/sd", &out->sd_total_bytes, &out->sd_free_bytes);
     }
     return true;
 }
@@ -82,8 +256,12 @@ void usb_responder_file_ops_shutdown(usb_responder_file_ops_t* ops) {
 }
 
 bool usb_responder_file_begin_upload(
-    usb_responder_file_ops_t* ops, uint32_t transfer_id, const char* relative_path) {
+    usb_responder_file_ops_t* ops,
+    uint32_t transfer_id,
+    const char* relative_path,
+    const char* desire_storage) {
     usb_responder_upload_session_t* session = NULL;
+    usb_responder_storage_t storage = USB_RESPONDER_STORAGE_NAND;
 
     if (!ops || !relative_path || find_session(ops, transfer_id)) {
         usb_responder_set_last_error("invalid upload session");
@@ -94,7 +272,8 @@ bool usb_responder_file_begin_upload(
         usb_responder_set_last_error("no free upload session");
         return false;
     }
-    if (!build_path(ops, relative_path, session->final_path, sizeof(session->final_path))) {
+    if (!build_path(relative_path, session->final_path, sizeof(session->final_path), &storage) ||
+        !path_storage_matches_desire(storage, desire_storage) || !ensure_storage_writeable(storage)) {
         session->used = false;
         return false;
     }
@@ -191,7 +370,7 @@ bool usb_responder_file_read(
     if (!ops || !relative_path || !out_data || !out_size) {
         return false;
     }
-    if (!build_path(ops, relative_path, path, sizeof(path))) {
+    if (!build_path(relative_path, path, sizeof(path), NULL)) {
         return false;
     }
     return usb_responder_read_file_all(path, out_data, out_size);
@@ -239,7 +418,7 @@ bool usb_responder_file_list(
     }
     *out_files = NULL;
     *out_dirs = NULL;
-    if (!build_path(ops, relative_path, dirpath, sizeof(dirpath))) {
+    if (!build_path(relative_path, dirpath, sizeof(dirpath), NULL)) {
         return false;
     }
     dir = opendir(dirpath);
@@ -319,7 +498,7 @@ bool usb_responder_file_stat(
         return false;
     }
     memset(out, 0, sizeof(*out));
-    if (!build_path(ops, relative_path, path, sizeof(path))) {
+    if (!build_path(relative_path, path, sizeof(path), NULL)) {
         return false;
     }
     if (lstat(path, &st) != 0) {
@@ -397,29 +576,39 @@ static bool remove_path_recursive(const char* abs_path) {
     return true;
 }
 
-bool usb_responder_file_delete(const usb_responder_file_ops_t* ops, const char* relative_path) {
+bool usb_responder_file_delete(
+    const usb_responder_file_ops_t* ops, const char* relative_path, const char* desire_storage) {
     char path[USB_RESPONDER_PATH_MAX_LEN];
+    usb_responder_storage_t storage = USB_RESPONDER_STORAGE_NAND;
     if (!ops || !relative_path) {
         return false;
     }
-    if (!build_path(ops, relative_path, path, sizeof(path))) {
+    if (!build_path(relative_path, path, sizeof(path), &storage) ||
+        !path_storage_matches_desire(storage, desire_storage) || !ensure_storage_writeable(storage)) {
+        return false;
+    }
+    if (path_is_storage_root(path)) {
+        usb_responder_set_last_error("refusing to delete storage root");
         return false;
     }
     return remove_path_recursive(path);
 }
 
-bool usb_responder_dir_mkdir(usb_responder_file_ops_t* ops, const char* relative_path, bool parents) {
+bool usb_responder_dir_mkdir(
+    usb_responder_file_ops_t* ops, const char* relative_path, bool parents, const char* desire_storage) {
     char path[USB_RESPONDER_PATH_MAX_LEN];
     char work[USB_RESPONDER_PATH_MAX_LEN];
     const char* r = NULL;
+    usb_responder_storage_t storage = USB_RESPONDER_STORAGE_NAND;
 
     if (!ops || !relative_path) {
         return false;
     }
+    if (!build_path(relative_path, path, sizeof(path), &storage) ||
+        !path_storage_matches_desire(storage, desire_storage) || !ensure_storage_writeable(storage)) {
+        return false;
+    }
     if (!parents) {
-        if (!build_path(ops, relative_path, path, sizeof(path))) {
-            return false;
-        }
         if (mkdir(path, 0755) != 0) {
             set_file_error("mkdir", path);
             return false;
@@ -427,13 +616,14 @@ bool usb_responder_dir_mkdir(usb_responder_file_ops_t* ops, const char* relative
         return true;
     }
 
-    if (snprintf(work, sizeof(work), "%s", ops->media_root) >= (int)sizeof(work)) {
+    if (snprintf(work, sizeof(work), "/") >= (int)sizeof(work)) {
         usb_responder_set_last_error("path too long");
         return false;
     }
-    r = relative_path;
+    r = path + 1;
     while (*r != '\0') {
         const char* slash = NULL;
+        const char* sep = NULL;
         size_t seglen = 0;
         size_t wlen = 0;
         int n = 0;
@@ -451,7 +641,8 @@ bool usb_responder_dir_mkdir(usb_responder_file_ops_t* ops, const char* relative
         }
 
         wlen = strlen(work);
-        n = snprintf(work + wlen, sizeof(work) - wlen, "/%.*s", (int)seglen, r);
+        sep = (strcmp(work, "/") == 0) ? "" : "/";
+        n = snprintf(work + wlen, sizeof(work) - wlen, "%s%.*s", sep, (int)seglen, r);
         if (n <= 0 || wlen + (size_t)n >= sizeof(work)) {
             usb_responder_set_last_error("path too long");
             return false;
@@ -480,15 +671,36 @@ bool usb_responder_dir_mkdir(usb_responder_file_ops_t* ops, const char* relative
 }
 
 bool usb_responder_file_rename(
-    const usb_responder_file_ops_t* ops, const char* from_relative, const char* to_relative) {
+    const usb_responder_file_ops_t* ops,
+    const char* from_relative,
+    const char* to_relative,
+    const char* desire_storage) {
     char from_path[USB_RESPONDER_PATH_MAX_LEN];
     char to_path[USB_RESPONDER_PATH_MAX_LEN];
+    usb_responder_storage_t from_storage = USB_RESPONDER_STORAGE_NAND;
+    usb_responder_storage_t to_storage = USB_RESPONDER_STORAGE_NAND;
     if (!ops || !from_relative || !to_relative) {
         return false;
     }
-    if (!build_path(ops, from_relative, from_path, sizeof(from_path)) ||
-        !build_path(ops, to_relative, to_path, sizeof(to_path))) {
+    if (!build_path(from_relative, from_path, sizeof(from_path), &from_storage) ||
+        !build_path(to_relative, to_path, sizeof(to_path), &to_storage) ||
+        !path_storage_matches_desire(from_storage, desire_storage) ||
+        !path_storage_matches_desire(to_storage, desire_storage) ||
+        !ensure_storage_writeable(from_storage) ||
+        (to_storage != from_storage && !ensure_storage_writeable(to_storage))) {
         return false;
     }
-    return rename(from_path, to_path) == 0;
+    if (path_is_storage_root(from_path) || path_is_storage_root(to_path)) {
+        usb_responder_set_last_error("refusing to rename storage root");
+        return false;
+    }
+    if (from_storage != to_storage) {
+        usb_responder_set_last_error("cross-storage rename is not supported");
+        return false;
+    }
+    if (rename(from_path, to_path) != 0) {
+        set_file_error("rename", to_path);
+        return false;
+    }
+    return true;
 }

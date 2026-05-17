@@ -11,7 +11,6 @@
 #   GADGET_NAME       默认 g1
 #   FFS_INSTANCE      FunctionFS 实例名，须与 mount 第三参数一致，默认 epass
 #   FFS_MOUNT         挂载点，默认 /dev/ffs-epass
-#   MEDIA_ROOT        usb_responder --media-root，默认 /mnt
 #   USB_RESPONDER     可执行文件路径，默认 epass_usb_responder
 #   USB_RESPONDER_VERBOSE  设为 1/true/yes 时启动加 -v（详细日志）
 #   ID_VENDOR         默认 0x1d6b
@@ -30,7 +29,6 @@ GADGET_NAME="${GADGET_NAME:-g1}"
 GADGET_ROOT="${CONFIGFS_DIR}/usb_gadget/${GADGET_NAME}"
 FFS_INSTANCE="${FFS_INSTANCE:-epass}"
 FFS_MOUNT="${FFS_MOUNT:-/dev/ffs-epass}"
-MEDIA_ROOT="${MEDIA_ROOT:-/mnt}"
 USB_RESPONDER="${USB_RESPONDER:-epass_usb_responder}"
 ID_VENDOR="${ID_VENDOR:-0x1d6b}"
 ID_PRODUCT="${ID_PRODUCT:-0x0203}"
@@ -138,13 +136,11 @@ gadget_start() {
     # if command -v start-stop-daemon >/dev/null 2>&1; then
     #     start-stop-daemon -S -q -m -b -p "$RESPONDER_PIDFILE" -x "$USB_RESPONDER" -- \
     #         --ffs "$FFS_MOUNT" \
-    #         --media-root "$MEDIA_ROOT" \
     #         "$@"
     # else
         "$USB_RESPONDER" \
             $RESPONDER_VERBOSE_ARG \
             --ffs "$FFS_MOUNT" \
-            --media-root "$MEDIA_ROOT" \
             "$@" &
         echo $! > "$RESPONDER_PIDFILE"
     # fi

@@ -330,17 +330,19 @@ static bool handle_file_put_begin(responder_runtime_t* rt, const usb_responder_f
     usb_responder_kv_t kvs[USB_RESPONDER_MAX_KV] = {0};
     size_t kv_count = 0;
     const char* path = NULL;
+    const char* desire_storage = NULL;
     usb_responder_kv_t status[2];
 
     if (!usb_responder_protocol_decode_kv(in->payload, in->header.payload_len, kvs, USB_RESPONDER_MAX_KV, &kv_count)) {
         return send_error(rt, in->header.request_id, "invalid kv payload");
     }
     path = kv_get(kvs, kv_count, "path");
+    desire_storage = kv_get(kvs, kv_count, "desire_storage");
     if (!path) {
         usb_responder_protocol_kv_free(kvs, kv_count);
         return send_error(rt, in->header.request_id, "missing path");
     }
-    if (!usb_responder_file_begin_upload(&rt->files, in->header.request_id, path)) {
+    if (!usb_responder_file_begin_upload(&rt->files, in->header.request_id, path, desire_storage)) {
         usb_responder_protocol_kv_free(kvs, kv_count);
         return send_last_error(rt, in->header.request_id, "begin upload failed");
     }
@@ -465,13 +467,15 @@ static bool handle_file_delete(responder_runtime_t* rt, const usb_responder_fram
     usb_responder_kv_t kvs[USB_RESPONDER_MAX_KV] = {0};
     size_t kv_count = 0;
     const char* path = NULL;
+    const char* desire_storage = NULL;
     usb_responder_kv_t status;
 
     if (!usb_responder_protocol_decode_kv(in->payload, in->header.payload_len, kvs, USB_RESPONDER_MAX_KV, &kv_count)) {
         return send_error(rt, in->header.request_id, "invalid kv payload");
     }
     path = kv_get(kvs, kv_count, "path");
-    if (!path || !usb_responder_file_delete(&rt->files, path)) {
+    desire_storage = kv_get(kvs, kv_count, "desire_storage");
+    if (!path || !usb_responder_file_delete(&rt->files, path, desire_storage)) {
         usb_responder_protocol_kv_free(kvs, kv_count);
         return send_last_error(rt, in->header.request_id, "delete failed");
     }
@@ -486,6 +490,7 @@ static bool handle_file_rename(responder_runtime_t* rt, const usb_responder_fram
     size_t kv_count = 0;
     const char* from = NULL;
     const char* to = NULL;
+    const char* desire_storage = NULL;
     usb_responder_kv_t status;
 
     if (!usb_responder_protocol_decode_kv(in->payload, in->header.payload_len, kvs, USB_RESPONDER_MAX_KV, &kv_count)) {
@@ -493,9 +498,10 @@ static bool handle_file_rename(responder_runtime_t* rt, const usb_responder_fram
     }
     from = kv_get(kvs, kv_count, "from");
     to = kv_get(kvs, kv_count, "to");
-    if (!from || !to || !usb_responder_file_rename(&rt->files, from, to)) {
+    desire_storage = kv_get(kvs, kv_count, "desire_storage");
+    if (!from || !to || !usb_responder_file_rename(&rt->files, from, to, desire_storage)) {
         usb_responder_protocol_kv_free(kvs, kv_count);
-        return send_error(rt, in->header.request_id, "rename failed");
+        return send_last_error(rt, in->header.request_id, "rename failed");
     }
     usb_responder_protocol_kv_free(kvs, kv_count);
     status.key = "status";
@@ -508,6 +514,7 @@ static bool handle_file_mkdir(responder_runtime_t* rt, const usb_responder_frame
     size_t kv_count = 0;
     const char* path = NULL;
     const char* parents_val = NULL;
+    const char* desire_storage = NULL;
     bool parents = false;
     usb_responder_kv_t status;
 
@@ -516,12 +523,13 @@ static bool handle_file_mkdir(responder_runtime_t* rt, const usb_responder_frame
     }
     path = kv_get(kvs, kv_count, "path");
     parents_val = kv_get(kvs, kv_count, "parents");
+    desire_storage = kv_get(kvs, kv_count, "desire_storage");
     if (parents_val != NULL &&
         (strcmp(parents_val, "1") == 0 || strcasecmp(parents_val, "true") == 0 ||
          strcasecmp(parents_val, "yes") == 0)) {
         parents = true;
     }
-    if (!path || !usb_responder_dir_mkdir(&rt->files, path, parents)) {
+    if (!path || !usb_responder_dir_mkdir(&rt->files, path, parents, desire_storage)) {
         usb_responder_protocol_kv_free(kvs, kv_count);
         return send_last_error(rt, in->header.request_id, "mkdir failed");
     }
@@ -658,12 +666,18 @@ static bool exec_capture_trim(const char* cmdline, uint32_t timeout_ms, char** o
 }
 
 static bool handle_devinfo(responder_runtime_t* rt, const usb_responder_frame_t* in) {
-    usb_responder_kv_t kvs[4];
+    usb_responder_kv_t kvs[9];
     char* model = NULL;
     char* rootfs = NULL;
     char* app = NULL;
     char kernel_buf[128] = "";
+    char sd_mounted_buf[2] = "0";
+    char nand_total_buf[32] = "0";
+    char nand_free_buf[32] = "0";
+    char sd_total_buf[32] = "0";
+    char sd_free_buf[32] = "0";
     struct utsname un;
+    usb_responder_storage_info_t storage;
     bool ok = false;
 
     memset(&kvs, 0, sizeof(kvs));
@@ -680,6 +694,13 @@ static bool handle_devinfo(responder_runtime_t* rt, const usb_responder_frame_t*
     if (!exec_capture_trim("/root/epass_drm_app version", 3000, &app)) {
         app = strdup("");
     }
+    if (usb_responder_storage_info_read(&storage)) {
+        snprintf(sd_mounted_buf, sizeof(sd_mounted_buf), "%u", storage.sd_mounted ? 1u : 0u);
+        snprintf(nand_total_buf, sizeof(nand_total_buf), "%llu", (unsigned long long)storage.nand_total_bytes);
+        snprintf(nand_free_buf, sizeof(nand_free_buf), "%llu", (unsigned long long)storage.nand_free_bytes);
+        snprintf(sd_total_buf, sizeof(sd_total_buf), "%llu", (unsigned long long)storage.sd_total_bytes);
+        snprintf(sd_free_buf, sizeof(sd_free_buf), "%llu", (unsigned long long)storage.sd_free_bytes);
+    }
 
     kvs[0].key = "model";
     kvs[0].value = model ? model : (char*)"";
@@ -689,8 +710,18 @@ static bool handle_devinfo(responder_runtime_t* rt, const usb_responder_frame_t*
     kvs[2].value = rootfs ? rootfs : (char*)"";
     kvs[3].key = "app";
     kvs[3].value = app ? app : (char*)"";
+    kvs[4].key = "sd_mounted";
+    kvs[4].value = sd_mounted_buf;
+    kvs[5].key = "nand_total_bytes";
+    kvs[5].value = nand_total_buf;
+    kvs[6].key = "nand_free_bytes";
+    kvs[6].value = nand_free_buf;
+    kvs[7].key = "sd_total_bytes";
+    kvs[7].value = sd_total_buf;
+    kvs[8].key = "sd_free_bytes";
+    kvs[8].value = sd_free_buf;
 
-    ok = send_kv_response(rt, USB_RESPONDER_MSG_DEVINFO, in->header.request_id, kvs, 4);
+    ok = send_kv_response(rt, USB_RESPONDER_MSG_DEVINFO, in->header.request_id, kvs, 9);
 
     free(model);
     free(rootfs);
@@ -921,7 +952,7 @@ bool usb_responder_run(const usb_responder_config_t* config) {
     size_t strings_size = 0;
     bool ok = false;
 
-    if (!config || !config->ffs_mount || !config->media_root) {
+    if (!config || !config->ffs_mount) {
         return false;
     }
     memset(&rt, 0, sizeof(rt));
@@ -933,7 +964,7 @@ bool usb_responder_run(const usb_responder_config_t* config) {
     if (rt.cfg.max_stdout == 0) rt.cfg.max_stdout = 64 * 1024;
     if (rt.cfg.max_stderr == 0) rt.cfg.max_stderr = 64 * 1024;
 
-    if (!usb_responder_file_ops_init(&rt.files, rt.cfg.media_root)) {
+    if (!usb_responder_file_ops_init(&rt.files)) {
         return false;
     }
     if (!open_ep(&rt.ep0_fd, rt.cfg.ffs_mount, "ep0", O_RDWR)) {

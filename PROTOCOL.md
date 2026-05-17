@@ -77,6 +77,7 @@ repeat count times:
 - `from`
 - `to`
 - `parents`（可选：`1` / `true` / `yes` 表示创建父目录，见 `FILE_MKDIR`）
+- `desire_storage`（可选：`nand` / `sd`，写入类 API 的期望存储校验）
 - `status`
 - `message`
 - `files` / `dirs`（`FILE_LIST` 成功应答：按行分隔的条目名）
@@ -91,7 +92,7 @@ repeat count times:
 
 ## 5.2 上传文件
 
-1) `FILE_PUT_BEGIN`，KV: `path=<relative_path>`  
+1) `FILE_PUT_BEGIN`，KV: `path=<relative_path>`，可选 `desire_storage=nand|sd`  
 2) 多次 `FILE_PUT_CHUNK`，payload 为文件分片  
    - 若分片前 4 字节是 transfer_id（小端），设备会优先使用它；否则使用帧头 `request_id`。  
 3) `FILE_PUT_END`（可选 4 字节 transfer_id）  
@@ -128,13 +129,14 @@ repeat count times:
 
 ## 5.5 删除 / 创建目录 / 重命名
 
-- 删除路径：`FILE_DELETE`，KV: `path=<relative_path>`  
+- 删除路径：`FILE_DELETE`，KV: `path=<relative_path>`，可选 `desire_storage=nand|sd`  
   - 普通文件或符号链接：unlink。  
   - 目录：**递归删除**其下所有内容，再 `rmdir`（等价于受限根目录内的 `rm -rf`）。
-- 创建目录：`FILE_MKDIR`，KV: `path=<relative_path>`，可选 `parents=1`（或 `true`/`yes`）  
+- 创建目录：`FILE_MKDIR`，KV: `path=<relative_path>`，可选 `parents=1`（或 `true`/`yes`）、`desire_storage=nand|sd`  
   - 无 `parents`：只建最后一级（父目录须已存在）。  
   - 有 `parents`：沿路径逐级 `mkdir`（类似 `mkdir -p`）。
-- 重命名：`FILE_RENAME`，KV: `from=<path1>`, `to=<path2>`
+- 重命名：`FILE_RENAME`，KV: `from=<path1>`, `to=<path2>`，可选 `desire_storage=nand|sd`
+  - 若 `from` 与 `to` 位于不同存储，返回 `ERROR`；客户端应改用复制后删除。
 
 成功返回 `STATUS`，失败返回 `ERROR`。
 
@@ -147,6 +149,9 @@ repeat count times:
    - `kernel`：来自 `uname(2)` 的 `release` 字段
    - `rootfs`：`/etc/os-release` 全文（多行，UTF-8）
    - `app`：`/root/epass_drm_app version` 的标准输出（trim）
+   - `sd_mounted`：`1` 表示 `/sd` 当前挂载到 mmc 设备，`0` 表示未挂载或来源不是 mmc
+   - `nand_total_bytes` / `nand_free_bytes`：`/` 所在文件系统容量和可用空间，十进制字节数
+   - `sd_total_bytes` / `sd_free_bytes`：`/sd` 已挂载到 mmc 时的容量和可用空间；未挂载时为 `0`
 
 任一字段获取失败返回空字符串；不会因为某项失败而整体失败。
 `app` 字段执行有 3000ms 超时，超时或非零退出按空处理。
@@ -187,7 +192,10 @@ bytes[stderr_len] stderr
 
 - 仅允许相对路径，不允许以 `/` 开头。
 - 禁止 `..` 路径穿越。
-- 文件操作根目录由启动参数 `--media-root` 指定。
+- 文件操作按设备根文件树解析：`foo/bar` 映射到 `/foo/bar`，`sd/foo` 映射到 `/sd/foo`。
+- `sd` 或 `sd/...` 被视为 SD 存储路径；其他路径被视为 NAND 路径。
+- SD 写入类操作要求 `/sd` 当前确认为 mmc 挂载，否则返回 `ERROR`，避免 SD 未挂载时误写入 NAND 上的 `/sd` 目录。
+- 写入类 API 的 `desire_storage` 只做校验，不参与路径重写；期望存储和路径实际存储不一致时返回 `ERROR`。
 
 ## 8. 错误语义
 
@@ -242,7 +250,7 @@ bytes[stderr_len] stderr
 - `scripts/usb_responder_gadget.sh start`
 - `scripts/usb_responder_gadget.sh stop`
 
-可通过环境变量覆盖 `FFS_INSTANCE`、`FFS_MOUNT`、`MEDIA_ROOT`、`USB_RESPONDER`、`ID_VENDOR`、`ID_PRODUCT` 等，详见脚本头部注释。
+可通过环境变量覆盖 `FFS_INSTANCE`、`FFS_MOUNT`、`USB_RESPONDER`、`ID_VENDOR`、`ID_PRODUCT` 等，详见脚本头部注释。
 
 ## 12. pyhost 上位机（当前工程实现）
 
@@ -269,7 +277,7 @@ uv run epass-host --vid 0x1d6b --pid 0x0203 hello
 ## 13. 工程化与排错建议
 
 - 部署新版本后需要替换对侧实际运行的 `USB_RESPONDER` 路径（脚本默认 `/usr/bin/usb_responder`），并重启 gadget。
-- 默认 `MEDIA_ROOT=/mnt`。上传返回 `begin upload failed: fopen ...` 时，优先检查该目录是否存在、是否可写、是否为只读文件系统。
+- 文件协议路径默认从设备 `/` 解析。上传返回 `begin upload failed: fopen ...` 时，优先检查目标目录是否存在、是否可写、文件系统是否只读；写入 `sd/...` 时还要检查 `/sd` 是否挂载到 mmc。
 - 文件路径只允许相对路径；绝对路径和 `..` 会被拒绝。
 - 主机端若看到 `ERROR`，应解析 KV 中的 `message` 并展示给用户。当前设备端会尽量返回底层 errno 文本，便于定位权限、目录不存在、空间不足等问题。
 - 不建议在全速 USB 上使用过大的上传 chunk。当前 `pyhost` 默认约 16KiB，吞吐和稳定性在 F1C 这类设备上更均衡。
