@@ -187,6 +187,22 @@ static bool ensure_storage_writeable(usb_responder_storage_t storage) {
     return true;
 }
 
+static bool parse_perm_octal(const char* perm_str, mode_t* out_mode) {
+    char* end = NULL;
+    unsigned long val = 0;
+
+    if (!perm_str || perm_str[0] == '\0' || !out_mode) {
+        return false;
+    }
+    val = strtoul(perm_str, &end, 8);
+    if (end == perm_str || *end != '\0' || val > 07777u) {
+        usb_responder_set_last_error("invalid perm");
+        return false;
+    }
+    *out_mode = (mode_t)(val & 07777u);
+    return true;
+}
+
 static void storage_statvfs_or_zero(const char* path, uint64_t* total_bytes, uint64_t* free_bytes) {
     struct statvfs sv;
 
@@ -259,18 +275,32 @@ bool usb_responder_file_begin_upload(
     usb_responder_file_ops_t* ops,
     uint32_t transfer_id,
     const char* relative_path,
-    const char* desire_storage) {
+    const char* desire_storage,
+    const char* perm) {
     usb_responder_upload_session_t* session = NULL;
     usb_responder_storage_t storage = USB_RESPONDER_STORAGE_NAND;
 
-    if (!ops || !relative_path || find_session(ops, transfer_id)) {
+    if (!ops || !relative_path) {
         usb_responder_set_last_error("invalid upload session");
         return false;
+    }
+    /* 上次上传未完成时客户端常会带着同一 transfer_id 重试 BEGIN；先清理残留会话。 */
+    if (find_session(ops, transfer_id)) {
+        usb_responder_file_abort_upload(ops, transfer_id);
     }
     session = alloc_session(ops);
     if (!session) {
         usb_responder_set_last_error("no free upload session");
         return false;
+    }
+    session->apply_perm = false;
+    session->file_mode = 0644;
+    if (perm != NULL && perm[0] != '\0') {
+        if (!parse_perm_octal(perm, &session->file_mode)) {
+            session->used = false;
+            return false;
+        }
+        session->apply_perm = true;
     }
     if (!build_path(relative_path, session->final_path, sizeof(session->final_path), &storage) ||
         !path_storage_matches_desire(storage, desire_storage) || !ensure_storage_writeable(storage)) {
@@ -341,6 +371,14 @@ bool usb_responder_file_finish_upload(usb_responder_file_ops_t* ops, uint32_t tr
         unlink(session->temp_path);
         memset(session, 0, sizeof(*session));
         return false;
+    }
+    if (session->apply_perm) {
+        if (chmod(session->final_path, session->file_mode) != 0) {
+            set_file_error("chmod", session->final_path);
+            unlink(session->final_path);
+            memset(session, 0, sizeof(*session));
+            return false;
+        }
     }
     memset(session, 0, sizeof(*session));
     return true;

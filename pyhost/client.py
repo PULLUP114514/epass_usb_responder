@@ -135,11 +135,14 @@ class UsbResponderClient:
         remote_path: str,
         chunk_size: int = DEFAULT_CHUNK,
         desire_storage: Optional[str] = None,
+        perm: Optional[str] = None,
     ) -> None:
         rid = self._next_id()
         items: List[Tuple[str, str]] = [("path", remote_path)]
         if desire_storage:
             items.append(("desire_storage", desire_storage))
+        if perm:
+            items.append(("perm", perm))
         begin = P.encode_kv(items)
         self._send_frame(P.MSG_FILE_PUT_BEGIN, begin, req_id=rid)
         self._expect_kv(rid)
@@ -265,6 +268,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("remote")
     sp.add_argument("--chunk", type=int, default=DEFAULT_CHUNK, help="每片字节数（默认约 16KiB）")
     sp.add_argument("--desire-storage", choices=("nand", "sd"), default=None, help="期望写入存储")
+    sp.add_argument("--perm", default=None, help="上传完成后 chmod 权限（八进制，如 0644）")
 
     sg = sub.add_parser("get", help="下载文件")
     sg.add_argument("remote")
@@ -333,7 +337,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                 else:
                     print(f"{k}={v}")
         elif args.cmd == "put":
-            cl.file_put(args.local, args.remote, chunk_size=args.chunk, desire_storage=args.desire_storage)
+            cl.file_put(
+                args.local,
+                args.remote,
+                chunk_size=args.chunk,
+                desire_storage=args.desire_storage,
+                perm=args.perm,
+            )
         elif args.cmd == "get":
             cl.file_get(args.remote, args.local)
         elif args.cmd == "ls":

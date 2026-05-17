@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <sys/types.h>
 
 #define USB_RESPONDER_MAX_UPLOAD_SESSIONS 16u
 #define USB_RESPONDER_PATH_MAX_LEN 4096u
@@ -17,6 +18,8 @@ typedef struct usb_responder_upload_session {
     char temp_path[USB_RESPONDER_PATH_MAX_LEN];
     char final_path[USB_RESPONDER_PATH_MAX_LEN];
     uint64_t bytes_written;
+    bool apply_perm;
+    mode_t file_mode;
 } usb_responder_upload_session_t;
 
 typedef enum usb_responder_storage {
@@ -47,7 +50,8 @@ bool usb_responder_file_begin_upload(
     usb_responder_file_ops_t* ops,
     uint32_t transfer_id,
     const char* relative_path,
-    const char* desire_storage);
+    const char* desire_storage,
+    const char* perm);
 bool usb_responder_file_append_upload_chunk(
     usb_responder_file_ops_t* ops, uint32_t transfer_id, const uint8_t* data, size_t size);
 bool usb_responder_file_finish_upload(usb_responder_file_ops_t* ops, uint32_t transfer_id);

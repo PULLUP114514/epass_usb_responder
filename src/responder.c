@@ -331,6 +331,7 @@ static bool handle_file_put_begin(responder_runtime_t* rt, const usb_responder_f
     size_t kv_count = 0;
     const char* path = NULL;
     const char* desire_storage = NULL;
+    const char* perm = NULL;
     usb_responder_kv_t status[2];
 
     if (!usb_responder_protocol_decode_kv(in->payload, in->header.payload_len, kvs, USB_RESPONDER_MAX_KV, &kv_count)) {
@@ -338,11 +339,12 @@ static bool handle_file_put_begin(responder_runtime_t* rt, const usb_responder_f
     }
     path = kv_get(kvs, kv_count, "path");
     desire_storage = kv_get(kvs, kv_count, "desire_storage");
+    perm = kv_get(kvs, kv_count, "perm");
     if (!path) {
         usb_responder_protocol_kv_free(kvs, kv_count);
         return send_error(rt, in->header.request_id, "missing path");
     }
-    if (!usb_responder_file_begin_upload(&rt->files, in->header.request_id, path, desire_storage)) {
+    if (!usb_responder_file_begin_upload(&rt->files, in->header.request_id, path, desire_storage, perm)) {
         usb_responder_protocol_kv_free(kvs, kv_count);
         return send_last_error(rt, in->header.request_id, "begin upload failed");
     }

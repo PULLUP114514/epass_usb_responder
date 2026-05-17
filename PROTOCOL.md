@@ -78,6 +78,7 @@ repeat count times:
 - `to`
 - `parents`（可选：`1` / `true` / `yes` 表示创建父目录，见 `FILE_MKDIR`）
 - `desire_storage`（可选：`nand` / `sd`，写入类 API 的期望存储校验）
+- `perm`（可选：`FILE_PUT_BEGIN` 上传完成后设置的文件权限，4 位八进制，如 `0644`、`0755`）
 - `status`
 - `message`
 - `files` / `dirs`（`FILE_LIST` 成功应答：按行分隔的条目名）
@@ -92,7 +93,7 @@ repeat count times:
 
 ## 5.2 上传文件
 
-1) `FILE_PUT_BEGIN`，KV: `path=<relative_path>`，可选 `desire_storage=nand|sd`  
+1) `FILE_PUT_BEGIN`，KV: `path=<relative_path>`，可选 `desire_storage=nand|sd`、`perm=<octal>`  
 2) 多次 `FILE_PUT_CHUNK`，payload 为文件分片  
    - 若分片前 4 字节是 transfer_id（小端），设备会优先使用它；否则使用帧头 `request_id`。  
 3) `FILE_PUT_END`（可选 4 字节 transfer_id）  
@@ -101,6 +102,7 @@ repeat count times:
 设备端行为：
 - 上传先写入 `*.part` 临时文件；
 - `FILE_PUT_END` 成功后 `rename` 到最终文件，避免半文件污染。
+- 若 `FILE_PUT_BEGIN` 带 `perm`，在 `rename` 成功后对最终文件执行 `chmod`；`chmod` 失败则删除已落盘文件并返回 `ERROR`。
 
 ## 5.3 下载文件
 
