@@ -109,9 +109,11 @@ class UsbResponderClient:
         return P.decode_frame(raw)
 
     def _read_some(self, size: int) -> None:
+        # 0 长度读是 bulk IN 的 ZLP 收尾包，不是错误：直接忽略，调用方循环会再读。
+        # 真正的超时由 pyusb 抛 USBTimeoutError，不会走到这里返回空。
         chunk = self._ep_in.read(size, timeout=self._timeout)
         if chunk is None or len(chunk) == 0:
-            raise IOError("USB read timeout or empty")
+            return
         self._rxbuf.extend(bytes(chunk))
 
     def _expect_kv(self, req_id: int) -> Dict[str, str]:

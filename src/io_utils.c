@@ -62,6 +62,34 @@ bool usb_responder_write_full(int fd, const uint8_t* data, size_t size) {
     return true;
 }
 
+bool usb_responder_bulk_in_needs_zlp(size_t nbytes) {
+    /* 判定对象是“整个 bulk IN 传输（一帧）”，不是某个分片。只有当总长是 bulk
+     * 最大包的非零整数倍时，末包才是满包，主机若请求的字节数多于实际数据就收不到
+     * 短包、会一直等待，此时需要补一个 ZLP 收尾。协商出的最大包是 512（高速）或
+     * 64（全速），FunctionFS 用户态拿不到当前速率，这里按二者的最大公约数 64 判定：
+     * 既不会漏掉任何速率下真正需要的 ZLP，又因为各客户端都已容忍 0 长度读，高速下
+     * 偶发多余的 ZLP 也无害。 */
+    return nbytes != 0u && (nbytes % 64u) == 0u;
+}
+
+bool usb_responder_write_zlp(int fd) {
+    for (;;) {
+        ssize_t w = write(fd, "", 0);
+        if (w == 0) {
+            return true;
+        }
+        if (w < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            set_errno_error("bulk IN ZLP");
+            return false;
+        }
+        usb_responder_set_last_error("bulk IN ZLP write returned data");
+        return false;
+    }
+}
+
 bool usb_responder_read_file_all(const char* path, uint8_t** out_data, size_t* out_size) {
     FILE* f = NULL;
     uint8_t* data = NULL;

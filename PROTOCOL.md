@@ -221,7 +221,8 @@ bytes[stderr_len] stderr
 当前工程实现采用以下策略：
 
 - `usb_responder` 设备端从 `ep2` 读取时，单次 `read()` 限制为 `16 KiB`，读到的数据进入内部 RX buffer，再按 24 字节头和 `payload_len` 切出完整帧。
-- `usb_responder` 设备端向 `ep1` 写响应时，也按 `16 KiB` 分片写出。
+- `usb_responder` 设备端向 `ep1` 写响应时，按 `16 KiB` 分片写出整帧。**整帧全部写完后**，若帧总长是 bulk 最大包的非零整数倍，则追加一次零长度包（ZLP）收尾，以便主机在 `transferIn`/`bulkTransfer` 请求大于实际数据时能结束本次 bulk IN。ZLP 只在帧末尾发送一次，绝不在分片之间插入，否则会被主机当成提前结束甚至空读错误。判定用最大包 64（高速 512 与全速 64 的最大公约数），保证两种速率下都不会漏发；高速下偶发多余的 ZLP 由主机端容忍 0 长度读来吸收。
+- 主机端读 IN 时**必须把 0 长度读（ZLP）当作正常的传输边界**：忽略它并继续读，而不是当成超时/断开错误。真正的超时由各自的 USB API 以异常/负返回值体现。
 - `pyhost` 主机端写 OUT 时按 `16 KiB` 分片；上传文件默认单个 `FILE_PUT_CHUNK` 的文件数据约为 `16 KiB - 4`（前 4 字节用于 `transfer_id`）。
 - `pyhost` 主机端读 IN 时维护内部 RX buffer，按协议帧长度重组。
 

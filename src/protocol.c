@@ -62,6 +62,10 @@ static bool write_limited(int fd, const uint8_t* data, size_t size) {
         }
         off += n;
     }
+    /* ZLP 只在整帧写完后按总帧长补一次，绝不在分片之间插入。 */
+    if (usb_responder_bulk_in_needs_zlp(size)) {
+        return usb_responder_write_zlp(fd);
+    }
     return true;
 }
 
