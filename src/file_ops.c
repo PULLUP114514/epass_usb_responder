@@ -4,6 +4,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <grp.h>
 #include <pwd.h>
 #include <stdio.h>
@@ -12,6 +13,27 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
+
+/* 每写入这么多字节就主动把脏页刷到 NAND。机器只有 ~57MB 内存、NAND 写很慢，
+ * 若任由脏页堆到 dirty_ratio（~9MB）触发 balance_dirty_pages，内核会强制 write()
+ * 同步回写，而慢 NAND 在 GC/擦除时吞吐塌到近零，单次 write 可卡几百秒，期间不读
+ * USB OUT 端点导致上位机超时。主动按 1MB 节奏 fsync 把在途脏数据钳小，让每次停顿
+ * 都有界，避免那种无界长停顿。 */
+#define USB_RESPONDER_UPLOAD_SYNC_INTERVAL (1u << 20)
+
+static void upload_pace_writeback(usb_responder_upload_session_t* session) {
+    int fd;
+    if (!session->fp || fflush(session->fp) != 0) {
+        return;
+    }
+    fd = fileno(session->fp);
+    if (fd < 0 || fsync(fd) != 0) {
+        return;
+    }
+    /* 落盘后的页已是干净页，主动让内核回收，避免页缓存在小内存机器上膨胀。
+     * POSIX_FADV_DONTNEED 在部分 libc 上是 no-op，但关键的 fsync 已经达成目的。 */
+    posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+}
 
 static void set_file_error(const char* prefix, const char* path) {
     char msg[512];
@@ -328,6 +350,7 @@ bool usb_responder_file_begin_upload(
     }
     session->transfer_id = transfer_id;
     session->bytes_written = 0;
+    session->synced_bytes = 0;
     return true;
 }
 
@@ -348,6 +371,10 @@ bool usb_responder_file_append_upload_chunk(
         return false;
     }
     session->bytes_written += size;
+    if (session->bytes_written - session->synced_bytes >= USB_RESPONDER_UPLOAD_SYNC_INTERVAL) {
+        upload_pace_writeback(session);
+        session->synced_bytes = session->bytes_written;
+    }
     return true;
 }
 

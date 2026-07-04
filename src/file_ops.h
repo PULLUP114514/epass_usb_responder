@@ -18,6 +18,7 @@ typedef struct usb_responder_upload_session {
     char temp_path[USB_RESPONDER_PATH_MAX_LEN];
     char final_path[USB_RESPONDER_PATH_MAX_LEN];
     uint64_t bytes_written;
+    uint64_t synced_bytes;
     bool apply_perm;
     mode_t file_mode;
 } usb_responder_upload_session_t;

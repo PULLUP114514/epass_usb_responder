@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import struct
 import sys
 from typing import Dict, List, Optional, Tuple
@@ -40,7 +41,7 @@ class UsbResponderClient:
         *,
         serial: Optional[str] = None,
         interface: int = 0,
-        timeout_ms: int = 60_000,
+        timeout_ms: int = 300_000,
     ) -> None:
         self._dev = usb.core.find(
             idVendor=vid,
@@ -245,6 +246,40 @@ class UsbResponderClient:
         return P.decode_command_result(fr.payload)
 
 
+def _remote_is_dir(cl: "UsbResponderClient", dest: str) -> bool:
+    # 尾斜杠按目录意图处理，即便设备上还不存在；否则查 stat。
+    if dest.endswith("/"):
+        return True
+    try:
+        return cl.file_stat(dest).get("type") == "dir"
+    except Exception:
+        return False
+
+
+def _remote_join(dest: str, local: str) -> str:
+    return dest.rstrip("/") + "/" + os.path.basename(local.rstrip("/"))
+
+
+def _local_perm(path: str) -> str:
+    # 只取权限位（低 12 bit，含 setuid/sticky），不涉及 owner —— 协议无法设 owner。
+    return f"{os.stat(path).st_mode & 0o7777:04o}"
+
+
+def _cp_one(cl: "UsbResponderClient", src: str, remote: str, args) -> None:
+    perm = None if args.no_perm else (args.perm or _local_perm(src))
+    cl.file_put(src, remote, chunk_size=args.chunk, desire_storage=args.desire_storage, perm=perm)
+    print(f"{src} -> {remote}")
+
+
+def _cp_dir(cl: "UsbResponderClient", src: str, remote_root: str, args) -> None:
+    for root, _dirs, files in os.walk(src):
+        rel = os.path.relpath(root, src)
+        remote_dir = remote_root if rel == "." else remote_root + "/" + rel.replace(os.sep, "/")
+        cl.dir_mkdir(remote_dir, parents=True, desire_storage=args.desire_storage)
+        for name in files:
+            _cp_one(cl, os.path.join(root, name), remote_dir + "/" + name, args)
+
+
 def _parse_hex(s: str) -> int:
     s = s.strip().lower()
     if s.startswith("0x"):
@@ -258,7 +293,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pid", type=_parse_hex, default=0x0203, help="USB Product ID")
     p.add_argument("--serial", default=None, help="按序列号筛选（可选）")
     p.add_argument("--interface", type=int, default=0, help="接口号，默认 0")
-    p.add_argument("--timeout", type=int, default=60_000, help="USB 传输超时（毫秒）")
+    p.add_argument(
+        "--timeout",
+        type=int,
+        default=300_000,
+        help="单次 USB 传输超时（毫秒）。大文件写慢速 NAND 时内核脏页回写会阻塞 write，"
+        "单次操作可能卡几十秒，故默认放宽到 300s",
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("hello", help="握手，打印 STATUS KV")
@@ -271,6 +312,17 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--chunk", type=int, default=DEFAULT_CHUNK, help="每片字节数（默认约 16KiB）")
     sp.add_argument("--desire-storage", choices=("nand", "sd"), default=None, help="期望写入存储")
     sp.add_argument("--perm", default=None, help="上传完成后 chmod 权限（八进制，如 0644）")
+
+    scp = sub.add_parser(
+        "cp",
+        help="上传一个或多个文件，类似 cp：目标为目录时复制为 目标/源文件名",
+    )
+    scp.add_argument("paths", nargs="+", metavar="SRC... DEST", help="一个或多个本地源，最后一个为设备目标")
+    scp.add_argument("-r", "--recursive", action="store_true", help="递归上传目录")
+    scp.add_argument("--chunk", type=int, default=DEFAULT_CHUNK, help="每片字节数（默认约 16KiB）")
+    scp.add_argument("--desire-storage", choices=("nand", "sd"), default=None, help="期望写入存储")
+    scp.add_argument("--perm", default=None, help="覆盖权限（八进制，如 0644）；默认保留本地文件原权限")
+    scp.add_argument("--no-perm", action="store_true", help="不设置权限，使用设备默认 umask")
 
     sg = sub.add_parser("get", help="下载文件")
     sg.add_argument("remote")
@@ -346,6 +398,25 @@ def main(argv: Optional[List[str]] = None) -> int:
                 desire_storage=args.desire_storage,
                 perm=args.perm,
             )
+        elif args.cmd == "cp":
+            if len(args.paths) < 2:
+                print("cp: 需要至少一个源和一个目标", file=sys.stderr)
+                return 2
+            *srcs, dest = args.paths
+            dest_is_dir = _remote_is_dir(cl, dest)
+            if len(srcs) > 1 and not dest_is_dir:
+                print(f"cp: 目标 {dest!r} 不是目录", file=sys.stderr)
+                return 2
+            for src in srcs:
+                if os.path.isdir(src):
+                    if not args.recursive:
+                        print(f"cp: 略过目录 {src!r}（需要 -r）", file=sys.stderr)
+                        return 2
+                    root = _remote_join(dest, src) if dest_is_dir else dest
+                    _cp_dir(cl, src, root, args)
+                else:
+                    remote = _remote_join(dest, src) if dest_is_dir else dest
+                    _cp_one(cl, src, remote, args)
         elif args.cmd == "get":
             cl.file_get(args.remote, args.local)
         elif args.cmd == "ls":

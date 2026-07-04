@@ -42,7 +42,23 @@ epass_usb_responder --ffs <FunctionFS 挂载目录>
 
 ## 上位机（PC）
 
-在 `pyhost/` 目录下用你喜欢的 Python 环境安装依赖后，使用 `epass-host` 与设备通信（具体参数见 `pyhost` 内 `client` 模块或 `--help`）。
+在 `pyhost/` 目录下用你喜欢的 Python 环境安装依赖后，使用 `epass-host` 与设备通信（全局参数 `--vid/--pid/--serial/--interface/--timeout`，各子命令参数见 `--help`）。
+
+| 子命令 | 说明 |
+|--------|------|
+| `hello` | 握手，打印 STATUS KV |
+| `devinfo` | 读取设备信息（model/kernel/rootfs/app/存储状态） |
+| `put <local> <remote>` | 上传单个文件；`--desire-storage nand\|sd`、`--perm <octal>`、`--chunk N` |
+| `cp <src...> <dest>` | 批量上传，类 `cp` 语义：`dest` 为目录（尾斜杠或设备上确为目录）时复制为 `dest/源文件名`；`-r` 递归上传目录；默认保留本地文件原权限（`--perm` 覆盖、`--no-perm` 关闭，均不涉及 owner） |
+| `get <remote> <local>` | 下载文件 |
+| `ls [path]` | 列目录 |
+| `stat <path>` | 路径元数据（owner/perm/size/type） |
+| `rm <path>` | 删除文件或目录（目录递归）；`--desire-storage` |
+| `mv <src> <dst>` | 重命名；`--desire-storage` |
+| `mkdir <path>` | 创建目录；`-p/--parents`、`--desire-storage` |
+| `exec -- <cmd...>` | 在设备上执行 shell 命令（带超时与输出上限） |
+
+可在 shell 配置里加 `alias epcp='epass-host cp'`，用 `epcp aaa.txt /root/` 这样快速上传。
 
 ## 协议
 

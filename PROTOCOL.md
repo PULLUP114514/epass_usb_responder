@@ -265,9 +265,12 @@ uv sync
 uv run python -m pyhost --vid 0x1d6b --pid 0x0203 hello
 uv run python -m pyhost --vid 0x1d6b --pid 0x0203 ls .
 uv run python -m pyhost --vid 0x1d6b --pid 0x0203 put ./local.bin remote.bin
+uv run python -m pyhost --vid 0x1d6b --pid 0x0203 cp a.bin b.bin assets/
 uv run python -m pyhost --vid 0x1d6b --pid 0x0203 get remote.bin ./out.bin
 uv run python -m pyhost --vid 0x1d6b --pid 0x0203 exec -- uname -a
 ```
+
+`cp` 是上位机层的便捷封装（批量上传、`-r` 递归目录、类 `cp` 路径语义：目标为目录时复制为 `目标/源文件名`；默认用本地文件原权限填 `FILE_PUT_BEGIN` 的 `perm`，只复制权限位不涉及 owner），协议层仍走 `FILE_PUT_BEGIN/CHUNK/END`、递归目录额外用 `FILE_MKDIR`，无新增消息类型。
 
 也可以使用 `pyproject.toml` 中注册的入口：
 
