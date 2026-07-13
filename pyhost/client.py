@@ -103,8 +103,10 @@ class UsbResponderClient:
         return rid
 
     def _recv_frame(self) -> P.Frame:
+        # _read_some 内部已用 wMaxPacketSize 对齐，每次读自然以 short packet
+        # 或收满请求量终止，不依赖设备端 ZLP。此处只需按需补足缓冲区。
         while len(self._rxbuf) < P.HEADER_SIZE:
-            self._read_some(self._rx_read_size)
+            self._read_some(P.HEADER_SIZE - len(self._rxbuf))
         hdr = bytes(self._rxbuf[: P.HEADER_SIZE])
         _magic, _ver, _typ, _fl, _rid, plen, _crc = struct_unpack_header(hdr)
         if plen > MAX_PAYLOAD:
@@ -117,12 +119,21 @@ class UsbResponderClient:
         return P.decode_frame(raw)
 
     def _read_some(self, size: int) -> None:
-        # 0 长度读是 bulk IN 的 ZLP 收尾包，不是错误：直接忽略，调用方循环会再读。
-        # 真正的超时由 pyusb 抛 USBTimeoutError，不会走到这里返回空。
-        chunk = self._ep_in.read(size, timeout=self._timeout)
-        if chunk is None or len(chunk) == 0:
+        # 用端点 wMaxPacketSize 作为最小读取单元：
+        # - 避免 read(size) 过小导致 libUSB OVERFLOW（UDC 驱动不支持拆分
+        #   FunctionFS 事件到多个 URB）
+        # - 每次 read 要么收到 short packet 自然终止，要么收满请求量按 USB
+        #   规范终止，全程不依赖设备端 ZLP
+        # - FunctionFS 残留的 ZLP 事件（0 字节）被循环吞掉
+        mps = self._ep_in.wMaxPacketSize
+        while True:
+            chunk = self._ep_in.read(max(size, mps), timeout=self._timeout)
+            if chunk is None or len(chunk) == 0:
+                # ZLP 残留：忽略，继续尝试读下一笔数据
+                continue
+            self._rxbuf.extend(bytes(chunk))
             return
-        self._rxbuf.extend(bytes(chunk))
+
 
     def _expect_kv(self, req_id: int) -> Dict[str, str]:
         fr = self._recv_frame()
